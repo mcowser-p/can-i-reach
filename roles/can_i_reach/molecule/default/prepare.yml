@@ -3,16 +3,16 @@
   hosts: all
   gather_facts: true
   tasks:
-    - name: Install dnsmasq (RedHat)
+    - name: Install dnsmasq and ping (RedHat)
       when: ansible_os_family == 'RedHat'
       ansible.builtin.dnf:
-        name: dnsmasq
+        name: [dnsmasq, iputils]
         state: present
 
-    - name: Install dnsmasq (Debian)
+    - name: Install dnsmasq and ping (Debian)
       when: ansible_os_family == 'Debian'
       ansible.builtin.apt:
-        name: dnsmasq
+        name: [dnsmasq, iputils-ping]
         state: present
         update_cache: true
 
@@ -21,6 +21,8 @@
         path: /etc/hosts
         line: 127.0.0.1 host.test
         state: present
+        # /etc/hosts is a bind mount inside docker — atomic rename fails
+        unsafe_writes: true
 
     - name: Start dnsmasq on loopback
       ansible.builtin.shell:
@@ -52,19 +54,21 @@
               data, addr = s.recvfrom(512)
               s.sendto(b"pong", addr)
 
+    # No "already running" guards: prepare runs once per fresh container,
+    # and pgrep -f would match its own invoking shell anyway.
     - name: Start the fake NTP server
       ansible.builtin.shell:
-        cmd: pgrep -f fake_ntp.py || (nohup python3 /opt/fake_ntp.py >/dev/null 2>&1 &)
+        cmd: nohup python3 /opt/fake_ntp.py >/dev/null 2>&1 &
       changed_when: true
 
     - name: Start the UDP echo server
       ansible.builtin.shell:
-        cmd: pgrep -f udp_echo.py || (nohup python3 /opt/udp_echo.py >/dev/null 2>&1 &)
+        cmd: nohup python3 /opt/udp_echo.py >/dev/null 2>&1 &
       changed_when: true
 
     - name: Start the HTTP server
       ansible.builtin.shell:
-        cmd: pgrep -f http.server || (cd /opt && nohup python3 -m http.server 8080 >/dev/null 2>&1 &)
+        cmd: cd /opt && nohup python3 -m http.server 8080 >/dev/null 2>&1 &
       changed_when: true
 
     - name: Wait for the TCP listeners

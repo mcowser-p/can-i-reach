@@ -11,15 +11,16 @@ platforms:
 
 role_name_check: 1
 # The role calls its own collection modules by FQCN, so the collection
-# itself (built from this checkout) must be installed, not just the
-# galaxy requirements.
+# itself (built from this checkout) must be installed (--force keeps it
+# current with the working tree), not just the galaxy requirements.
+# community.docker is for molecule's own docker create/destroy
+# playbooks. Everything goes to the default user collections path.
 dependency:
   name: shell
   command: >-
     bash -c "ansible-galaxy collection install ${MOLECULE_PROJECT_DIRECTORY}/../.. --force
-    -p ${MOLECULE_EPHEMERAL_DIRECTORY}/collections
     && ansible-galaxy collection install -r ${MOLECULE_PROJECT_DIRECTORY}/../../requirements.yml
-    -p ${MOLECULE_EPHEMERAL_DIRECTORY}/collections"
+    && ansible-galaxy collection install community.docker"
 scenario:
   test_sequence:
     - dependency
@@ -32,13 +33,13 @@ scenario:
     - destroy
 provisioner:
   name: ansible
-  env:
-    ANSIBLE_COLLECTIONS_PATH: ${MOLECULE_EPHEMERAL_DIRECTORY}/collections
   inventory:
     group_vars:
       all:
         can_i_reach_fail_on: never
         can_i_reach_timeout: 4
+        # containers already run as root, and almalinux:9 has no sudo
+        can_i_reach_repo_become: false
         can_i_reach_report_path: /tmp/can-i-reach-report.yml
         can_i_reach_endpoints:
           - {name: http-ok, host: 127.0.0.1, port: 8080, path: /, status_codes: [200]}
