@@ -1,0 +1,12 @@
+{
+  "name": "can-i-reach-release",
+  "private": true,
+  "description": "Release toolchain for the mcowser_p.can_i_reach collection (semantic-release)",
+  "devDependencies": {
+    "semantic-release": "25.0.9",
+    "@semantic-release/commit-analyzer": "13.0.1",
+    "@semantic-release/exec": "7.1.0",
+    "@semantic-release/github": "12.0.9",
+    "conventional-changelog-conventionalcommits": "10.4.0"
+  }
+}

@@ -1,0 +1,8 @@
+*.retry
+.cache/
+.venv/
+__pycache__/
+node_modules/
+package-lock.json
+mcowser_p-can_i_reach-*.tar.gz
+.ansible/

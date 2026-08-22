@@ -1,0 +1,50 @@
+---
+# Ansible Galaxy collection manifest for mcowser_p.can_i_reach.
+#
+# `version` is a placeholder — semantic-release stamps the released version
+# here at release time (see .releaserc.js) before building the collection
+# artifact. Do not bump it by hand.
+namespace: mcowser_p
+name: can_i_reach
+version: 0.0.0
+readme: README.md
+authors:
+  - mcowser-p
+description: >-
+  can-i-reach — network preflight checks run from the managed host
+  itself, for Linux and Windows targets. Verifies everything a fresh
+  deployment depends on: arbitrary TCP/UDP/HTTP endpoints, DNS against
+  the domain controllers (and DR controllers) directly, AD SRV records,
+  domain-controller port sets, real NTP time sources, proxy egress (and
+  optionally that direct internet is blocked), plus the package
+  infrastructure — apt/dnf repos on Linux; WSUS/Windows Update, winget
+  sources, and SMB shares on Windows. One report, one verdict, opt-in
+  remediation.
+license:
+  - Apache-2.0
+tags:
+  - networking
+  - connectivity
+  - preflight
+  - dns
+  - windows
+  - linux
+  - tools
+dependencies:
+  ansible.windows: '>=2.0.0'
+repository: https://github.com/mcowser-p/can-i-reach
+homepage: https://github.com/mcowser-p/can-i-reach
+issues: https://github.com/mcowser-p/can-i-reach/issues
+build_ignore:
+  - .github
+  - .git
+  - .gitignore
+  - .venv
+  - .releaserc.js
+  - .ansible-lint
+  - .yamllint
+  - package.json
+  - package-lock.json
+  - node_modules
+  - requirements.txt
+  - '*.tar.gz'
