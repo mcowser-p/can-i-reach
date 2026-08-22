@@ -1,0 +1,37 @@
+---
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      # ansible-core provides ansible-galaxy for the collection build/publish
+      # that @semantic-release/exec runs (see .releaserc.js).
+      - name: Install ansible-core (pinned)
+        run: pip install -r requirements.txt
+
+      # Pinned in package.json; Dependabot keeps the pins updated.
+      - name: Install semantic-release toolchain
+        run: npm install
+
+      - run: npx semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GALAXY_API_KEY: ${{ secrets.GALAXY_API_KEY }}

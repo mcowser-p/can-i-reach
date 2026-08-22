@@ -1,0 +1,40 @@
+---
+# Windows integration test. Runs against the windows-latest GitHub
+# runner itself, driven from WSL over WinRM and then over SSH (see
+# .github/workflows/molecule.yml). Only deterministic checks: the
+# runner has internet egress but its w32time service state varies, so
+# time discovery is disabled and udp-closed doubles as the intentional
+# failure (a closed loopback UDP port answers with ICMP unreachable).
+- name: Windows preflight exercise
+  hosts: windows
+  gather_facts: true
+  vars:
+    can_i_reach_fail_on: never
+    can_i_reach_timeout: 10
+    can_i_reach_time_discover_windows: false
+    can_i_reach_endpoints:
+      - {name: winrm-self, host: 127.0.0.1, port: 5985}
+      - {name: udp-closed, host: 127.0.0.1, port: 50123, protocol: udp, timeout: 3}
+      - {name: ping-self, host: 127.0.0.1, protocol: icmp}
+    can_i_reach_dns_queries:
+      - {name: github.com}
+      - {name: bing.com, servers: [1.1.1.1]}
+    can_i_reach_smb_shares:
+      - {name: admin-share, unc: '\\localhost\C$'}
+  roles:
+    - mcowser_p.can_i_reach.can_i_reach
+  tasks:
+    - name: Assert the expected verdicts
+      vars:
+        _c: "{{ can_i_reach_result.checks }}"
+      ansible.builtin.assert:
+        that:
+          - (_c | selectattr('id', 'eq', 'winrm-self') | first).status == 'ok'
+          - (_c | selectattr('id', 'eq', 'udp-closed') | first).status == 'fail'
+          - (_c | selectattr('id', 'eq', 'ping-self') | first).status == 'ok'
+          - (_c | selectattr('id', 'eq', 'dns:github.com') | first).status == 'ok'
+          - (_c | selectattr('id', 'eq', 'dns@1.1.1.1:bing.com') | first).status == 'ok'
+          # C$ lists for the admin test user; 'warn' would still prove the path
+          - (_c | selectattr('id', 'eq', 'smb:admin-share') | first).status in ['ok', 'warn']
+          - _c | selectattr('layer', 'eq', 'pkg') | selectattr('status', 'eq', 'fail') | list | length == 0
+        fail_msg: "unexpected records: {{ _c }}"

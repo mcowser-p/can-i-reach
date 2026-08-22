@@ -1,0 +1,10 @@
+---
+# Ready-to-run entry point:
+#   ansible-playbook -i <inventory> mcowser_p.can_i_reach.preflight \
+#     -e @examples/org-config.yml
+# Scope with can_i_reach_target_hosts (defaults to all).
+- name: Network preflight
+  hosts: "{{ can_i_reach_target_hosts | default('all') }}"
+  gather_facts: true
+  roles:
+    - mcowser_p.can_i_reach.can_i_reach

@@ -1,0 +1,54 @@
+---
+# Example org configuration for mcowser_p.can_i_reach — every knob, with
+# the values a typical AD + proxy + internal-mirror estate would use.
+# Pass it with `-e @org-config.yml` (or fold it into group_vars).
+
+# --- policy ---
+can_i_reach_fail_on: fail            # fail the play when any check fails
+can_i_reach_fail_fast: false         # collect everything, fail once at the end
+can_i_reach_report_path: ""          # e.g. /var/tmp/can-i-reach.yml (on the target)
+can_i_reach_timeout: 5
+
+# --- what the app itself needs ---
+can_i_reach_endpoints:
+  - {name: app-db, host: 10.40.2.11, port: 1433}
+  - {name: app-mq, host: mq.corp.example, port: 5671}
+  - {name: api-health, host: api.corp.example, port: 443, path: /healthz,
+     status_codes: [200, 204]}
+  - {name: syslog, host: log.corp.example, port: 514, protocol: udp}
+
+# --- DNS: prove the DCs (and the DR DCs) answer ---
+can_i_reach_domain_controllers:
+  - {name: dc1, address: 10.40.0.10}
+  - {name: dc2, address: 10.40.0.11}
+  - {name: dr-dc1, address: 10.48.0.10, dr: true}
+can_i_reach_dns_queries:
+  - {name: corp.example}
+  - {name: app.corp.example, expected_values: [10.40.2.20]}
+  - {name: _ldap._tcp.corp.example, qtype: SRV}
+can_i_reach_ad_domain: corp.example  # adds per-DC apex lookups + the
+                                     # _ldap._tcp.dc._msdcs SRV check
+
+# --- time (falls back to the DCs when empty) ---
+can_i_reach_time_sources: []
+
+# --- proxy egress, and proof that direct egress is blocked ---
+can_i_reach_proxies:
+  - name: corp
+    url: "http://proxy.corp.example:3128"
+    test_urls:
+      - https://deb.debian.org
+      - https://pypi.org
+can_i_reach_forbidden_urls:
+  - https://www.example.com          # must NOT work without the proxy
+
+# --- package infrastructure ---
+can_i_reach_repo_mode: refresh       # linux: real apt/dnf metadata refresh
+can_i_reach_wsus_url: ""             # windows: empty = read the registry
+                                     # policy, else probe public WU
+can_i_reach_smb_shares:
+  - {name: sccm, unc: '\\sccm01.corp.example\SMS_ABC'}
+  - {name: deploy, unc: '\\fs1.corp.example\deploy'}
+
+# --- opt-in remediation (explicit list, no 'all') ---
+can_i_reach_remediate: []            # e.g. [sync_time, flush_dns]
