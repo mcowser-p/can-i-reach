@@ -1,0 +1,75 @@
+---
+- name: Prepare loopback test services
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Install dnsmasq (RedHat)
+      when: ansible_os_family == 'RedHat'
+      ansible.builtin.dnf:
+        name: dnsmasq
+        state: present
+
+    - name: Install dnsmasq (Debian)
+      when: ansible_os_family == 'Debian'
+      ansible.builtin.apt:
+        name: dnsmasq
+        state: present
+        update_cache: true
+
+    - name: Publish the test name in /etc/hosts
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        line: 127.0.0.1 host.test
+        state: present
+
+    - name: Start dnsmasq on loopback
+      ansible.builtin.shell:
+        cmd: pgrep -x dnsmasq || dnsmasq --listen-address=127.0.0.1 --bind-interfaces
+      changed_when: true
+
+    - name: Deploy the fake NTP server
+      ansible.builtin.copy:
+        dest: /opt/fake_ntp.py
+        mode: "0644"
+        content: |
+          import socket
+          s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+          s.bind(("127.0.0.1", 123))
+          while True:
+              data, addr = s.recvfrom(512)
+              # LI=0 VN=4 mode=4 (server), stratum 2
+              s.sendto(bytes([0x24, 2]) + b"\x00" * 46, addr)
+
+    - name: Deploy the UDP echo server
+      ansible.builtin.copy:
+        dest: /opt/udp_echo.py
+        mode: "0644"
+        content: |
+          import socket
+          s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+          s.bind(("127.0.0.1", 19999))
+          while True:
+              data, addr = s.recvfrom(512)
+              s.sendto(b"pong", addr)
+
+    - name: Start the fake NTP server
+      ansible.builtin.shell:
+        cmd: pgrep -f fake_ntp.py || (nohup python3 /opt/fake_ntp.py >/dev/null 2>&1 &)
+      changed_when: true
+
+    - name: Start the UDP echo server
+      ansible.builtin.shell:
+        cmd: pgrep -f udp_echo.py || (nohup python3 /opt/udp_echo.py >/dev/null 2>&1 &)
+      changed_when: true
+
+    - name: Start the HTTP server
+      ansible.builtin.shell:
+        cmd: pgrep -f http.server || (cd /opt && nohup python3 -m http.server 8080 >/dev/null 2>&1 &)
+      changed_when: true
+
+    - name: Wait for the TCP listeners
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ item }}"
+        timeout: 15
+      loop: [53, 8080]

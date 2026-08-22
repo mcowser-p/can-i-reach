@@ -1,0 +1,43 @@
+---
+# set_fact results do not survive between molecule's separate
+# ansible-playbook invocations, so verification re-runs the role and
+# then asserts on the machine-readable result it leaves behind.
+- name: Verify
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Run the checks again for verification
+      ansible.builtin.include_role:
+        name: mcowser_p.can_i_reach.can_i_reach
+
+    - name: Assert the expected verdicts
+      vars:
+        _c: "{{ can_i_reach_result.checks }}"
+      ansible.builtin.assert:
+        that:
+          - _c | length == 11
+          - (_c | selectattr('id', 'eq', 'http-ok') | first).status == 'ok'
+          - (_c | selectattr('id', 'eq', 'tcp-ok') | first).status == 'ok'
+          - (_c | selectattr('id', 'eq', 'tcp-closed') | first).status == 'fail'
+          - (_c | selectattr('id', 'eq', 'udp-echo') | first).status == 'ok'
+          - (_c | selectattr('id', 'eq', 'ping-loop') | first).status == 'ok'
+          - (_c | selectattr('id', 'eq', 'dns:host.test') | first).status == 'ok'
+          - (_c | selectattr('id', 'eq', 'dns@127.0.0.1:host.test') | first).status == 'ok'
+          - (_c | selectattr('id', 'eq', 'dc:fake-dc') | first).status == 'ok'
+          - (_c | selectattr('id', 'eq', 'ntp:fake-ntp') | first).status == 'ok'
+          - (_c | selectattr('id', 'eq', 'noegress:10.255.255.1') | first).status == 'ok'
+          - (_c | selectattr('id', 'eq', 'repo:refresh') | first).status == 'ok'
+          - _c | selectattr('status', 'eq', 'fail') | list | length == 1
+          - _c | selectattr('status', 'eq', 'warn') | list | length == 0
+        fail_msg: "unexpected records: {{ _c }}"
+
+    - name: Stat the report file
+      ansible.builtin.stat:
+        path: /tmp/can-i-reach-report.yml
+      register: _can_i_reach_report_stat
+
+    - name: Assert the report file was written
+      ansible.builtin.assert:
+        that:
+          - _can_i_reach_report_stat.stat.exists
+          - _can_i_reach_report_stat.stat.size > 0

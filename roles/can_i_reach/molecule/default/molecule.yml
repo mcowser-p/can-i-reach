@@ -1,0 +1,57 @@
+---
+driver:
+  name: docker
+platforms:
+  - name: cir-alma9
+    image: almalinux:9
+    pre_build_image: true
+  - name: cir-ubuntu
+    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    pre_build_image: true
+
+role_name_check: 1
+# The role calls its own collection modules by FQCN, so the collection
+# itself (built from this checkout) must be installed, not just the
+# galaxy requirements.
+dependency:
+  name: shell
+  command: >-
+    bash -c "ansible-galaxy collection install ${MOLECULE_PROJECT_DIRECTORY}/../.. --force
+    -p ${MOLECULE_EPHEMERAL_DIRECTORY}/collections
+    && ansible-galaxy collection install -r ${MOLECULE_PROJECT_DIRECTORY}/../../requirements.yml
+    -p ${MOLECULE_EPHEMERAL_DIRECTORY}/collections"
+scenario:
+  test_sequence:
+    - dependency
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - verify
+    - destroy
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_COLLECTIONS_PATH: ${MOLECULE_EPHEMERAL_DIRECTORY}/collections
+  inventory:
+    group_vars:
+      all:
+        can_i_reach_fail_on: never
+        can_i_reach_timeout: 4
+        can_i_reach_report_path: /tmp/can-i-reach-report.yml
+        can_i_reach_endpoints:
+          - {name: http-ok, host: 127.0.0.1, port: 8080, path: /, status_codes: [200]}
+          - {name: tcp-ok, host: 127.0.0.1, port: 8080}
+          - {name: tcp-closed, host: 127.0.0.1, port: 9, timeout: 2}
+          - {name: udp-echo, host: 127.0.0.1, port: 19999, protocol: udp, expect_reply: true}
+          - {name: ping-loop, host: 127.0.0.1, protocol: icmp}
+        can_i_reach_dns_queries:
+          - {name: host.test, expected_values: [127.0.0.1]}
+        can_i_reach_domain_controllers:
+          - {name: fake-dc, address: 127.0.0.1}
+        can_i_reach_dc_tcp_ports: [53]
+        can_i_reach_time_sources:
+          - {name: fake-ntp, address: 127.0.0.1}
+        can_i_reach_forbidden_urls:
+          - https://10.255.255.1

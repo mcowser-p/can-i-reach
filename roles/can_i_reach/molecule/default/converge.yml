@@ -1,0 +1,6 @@
+---
+- name: Converge
+  hosts: all
+  gather_facts: true
+  roles:
+    - mcowser_p.can_i_reach.can_i_reach
