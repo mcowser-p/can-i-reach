@@ -1,0 +1,39 @@
+---
+galaxy_info:
+  namespace: mcowser_p
+  role_name: can_i_reach
+  author: mcowser-p
+  description: >-
+    Network preflight checks run from the managed host - endpoints
+    (tcp/udp/icmp/http), DNS directly against domain controllers and
+    DR controllers, AD ports and SRV records, real NTP exchanges,
+    proxy egress, and package infrastructure (apt/dnf, WSUS/Windows
+    Update, winget, SMB) with a report and explicit opt-in remediation
+  license: Apache-2.0
+  min_ansible_version: '2.16'
+
+  # Windows Server 2019+ targets are fully supported via
+  # ansible.windows (WinRM/SSH); Galaxy's platform list has no
+  # Windows entries to declare here.
+  platforms:
+    - name: EL
+      versions:
+        - '9'
+        - '10'
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+    - name: Debian
+      versions:
+        - bookworm
+
+  galaxy_tags:
+    - networking
+    - connectivity
+    - preflight
+    - dns
+    - windows
+    - proxy
+
+dependencies: []

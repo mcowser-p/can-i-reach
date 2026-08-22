@@ -1,0 +1,171 @@
+---
+# Layer: dc — domain controller reachability. The TCP port sweep covers
+# the well-known AD set; DNS service on each DC is proven by real
+# queries (the dns layer covers user queries via can_i_reach_dc_dns,
+# and this layer adds a per-DC lookup of the domain apex when
+# can_i_reach_ad_domain is set); NTP on the DCs is proven by the time
+# layer's fallback. So 53/udp and 123/udp are tested by protocol, not
+# by blind probes.
+
+- name: Probe domain controller TCP ports
+  when: not _can_i_reach_windows
+  ansible.builtin.wait_for:
+    host: "{{ _can_i_reach_dcp.0.address }}"
+    port: "{{ _can_i_reach_dcp.1 }}"
+    timeout: "{{ can_i_reach_timeout }}"
+  register: _can_i_reach_dcports_reg
+  check_mode: false
+  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  loop: "{{ can_i_reach_domain_controllers | product(can_i_reach_dc_tcp_ports) | list }}"
+  loop_control:
+    loop_var: _can_i_reach_dcp
+    label: "{{ _can_i_reach_dcp.0.address }}:{{ _can_i_reach_dcp.1 }}"
+
+- name: Probe domain controller TCP ports (windows)
+  when: _can_i_reach_windows
+  ansible.windows.win_wait_for:
+    host: "{{ _can_i_reach_dcp.0.address }}"
+    port: "{{ _can_i_reach_dcp.1 }}"
+    timeout: "{{ can_i_reach_timeout }}"
+  register: _can_i_reach_dcports_reg_win
+  check_mode: false
+  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  loop: "{{ can_i_reach_domain_controllers | product(can_i_reach_dc_tcp_ports) | list }}"
+  loop_control:
+    loop_var: _can_i_reach_dcp
+    label: "{{ _can_i_reach_dcp.0.address }}:{{ _can_i_reach_dcp.1 }}"
+
+- name: Record domain controller port reachability
+  vars:
+    _all: >-
+      {{ ((_can_i_reach_dcports_reg_win if _can_i_reach_windows else _can_i_reach_dcports_reg).results
+          | default([])) | rejectattr('skipped', 'defined') | list }}
+    _mine: "{{ _all | selectattr('_can_i_reach_dcp.0.address', 'eq', _can_i_reach_dc.address) | list }}"
+    _bad: >-
+      {{ _mine | selectattr('failed', 'defined') | selectattr('failed')
+         | map(attribute='_can_i_reach_dcp.1') | list }}
+    _dr: "{{ ' [DR]' if _can_i_reach_dc.dr | default(false) else '' }}"
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
+           'id': 'dc:' ~ (_can_i_reach_dc.name | default(_can_i_reach_dc.address)),
+           'layer': 'dc',
+           'status': 'ok' if _bad | length == 0 else 'fail',
+           'detail': (('all ' ~ (can_i_reach_dc_tcp_ports | length) ~ ' tcp ports reachable') if _bad | length == 0
+                      else ('unreachable tcp: ' ~ (_bad | join(', ')))) ~ _dr,
+           'remediation': '' if _bad | length == 0
+                          else 'open the listed ports (3268/3269 = Global Catalog, 464 = kpasswd)'}]}) }}
+  loop: "{{ can_i_reach_domain_controllers }}"
+  loop_control:
+    loop_var: _can_i_reach_dc
+    label: "{{ _can_i_reach_dc.name | default(_can_i_reach_dc.address) }}"
+
+# --- every DC resolves the domain apex ----------------------------------------
+- name: Ask each DC for the AD domain apex
+  when: not _can_i_reach_windows and can_i_reach_ad_domain | length > 0
+  mcowser_p.can_i_reach.dns_query:
+    name: "{{ can_i_reach_ad_domain }}"
+    server: "{{ _can_i_reach_dc.address }}"
+    timeout: "{{ can_i_reach_timeout }}"
+    tries: "{{ can_i_reach_tries }}"
+  register: _can_i_reach_dcdns_reg
+  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  loop: "{{ can_i_reach_domain_controllers }}"
+  loop_control:
+    loop_var: _can_i_reach_dc
+    label: "{{ can_i_reach_ad_domain }}@{{ _can_i_reach_dc.address }}"
+
+- name: Ask each DC for the AD domain apex (windows)
+  when: _can_i_reach_windows and can_i_reach_ad_domain | length > 0
+  ansible.windows.win_powershell:
+    script: "{{ lookup('ansible.builtin.file', 'dns_query.ps1') }}"
+    parameters:
+      Name: "{{ can_i_reach_ad_domain }}"
+      QType: A
+      Server: "{{ _can_i_reach_dc.address }}"
+      TimeoutSec: "{{ can_i_reach_timeout | float }}"
+  register: _can_i_reach_dcdns_reg_win
+  failed_when: >-
+    can_i_reach_fail_fast
+    and (_can_i_reach_dcdns_reg_win.result.status | default('fail')) == 'fail'
+  loop: "{{ can_i_reach_domain_controllers }}"
+  loop_control:
+    loop_var: _can_i_reach_dc
+    label: "{{ can_i_reach_ad_domain }}@{{ _can_i_reach_dc.address }}"
+
+- name: Record the per-DC apex lookups
+  vars:
+    _dc: "{{ _can_i_reach_r._can_i_reach_dc }}"
+    _dr: "{{ ' [DR]' if _dc.dr | default(false) else '' }}"
+    _status: >-
+      {{ (_can_i_reach_r.result.status | default('fail')) if _can_i_reach_windows
+         else ('fail' if _can_i_reach_r.failed | default(false) else 'ok') }}
+    _detail: >-
+      {{ ((_can_i_reach_r.result.detail | default('probe script error')) if _can_i_reach_windows
+          else (_can_i_reach_r.msg | default(can_i_reach_ad_domain ~ ' -> '
+                ~ (_can_i_reach_r.answers | default([]) | join(', ')))))
+         ~ _dr }}
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
+           'id': 'dc-dns:' ~ (_dc.name | default(_dc.address)),
+           'layer': 'dc',
+           'status': _status,
+           'detail': _detail,
+           'remediation': ''}]}) }}
+  loop: >-
+    {{ ((_can_i_reach_dcdns_reg_win if _can_i_reach_windows else _can_i_reach_dcdns_reg).results
+        | default([])) | rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    loop_var: _can_i_reach_r
+    label: "{{ _can_i_reach_r._can_i_reach_dc.address }}"
+
+# --- AD SRV records ------------------------------------------------------------
+- name: Check the AD SRV records via the system resolver
+  when:
+    - not _can_i_reach_windows
+    - can_i_reach_ad_domain | length > 0
+    - can_i_reach_ad_srv_check
+  mcowser_p.can_i_reach.dns_query:
+    name: "_ldap._tcp.dc._msdcs.{{ can_i_reach_ad_domain }}"
+    qtype: SRV
+    timeout: "{{ can_i_reach_timeout }}"
+    tries: "{{ can_i_reach_tries }}"
+  register: _can_i_reach_srv_reg
+  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+
+- name: Check the AD SRV records via the system resolver (windows)
+  when:
+    - _can_i_reach_windows
+    - can_i_reach_ad_domain | length > 0
+    - can_i_reach_ad_srv_check
+  ansible.windows.win_powershell:
+    script: "{{ lookup('ansible.builtin.file', 'dns_query.ps1') }}"
+    parameters:
+      Name: "_ldap._tcp.dc._msdcs.{{ can_i_reach_ad_domain }}"
+      QType: SRV
+      TimeoutSec: "{{ can_i_reach_timeout | float }}"
+  register: _can_i_reach_srv_reg_win
+  failed_when: >-
+    can_i_reach_fail_fast
+    and (_can_i_reach_srv_reg_win.result.status | default('fail')) == 'fail'
+
+- name: Record the AD SRV check
+  when: can_i_reach_ad_domain | length > 0 and can_i_reach_ad_srv_check
+  vars:
+    _r: "{{ _can_i_reach_srv_reg_win if _can_i_reach_windows else _can_i_reach_srv_reg }}"
+    _status: >-
+      {{ (_r.result.status | default('fail')) if _can_i_reach_windows
+         else ('fail' if _r.failed | default(false) else 'ok') }}
+    _detail: >-
+      {{ (_r.result.detail | default('probe script error')) if _can_i_reach_windows
+         else (_r.msg | default('SRV: ' ~ (_r.answers | default([]) | join(' | ')))) }}
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
+           'id': 'ad:srv_ldap',
+           'layer': 'dc',
+           'status': _status,
+           'detail': _detail,
+           'remediation': '' if _status == 'ok'
+                          else 'AD SRV records unreachable - is the resolver AD-aware?'}]}) }}

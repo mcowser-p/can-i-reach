@@ -1,0 +1,344 @@
+---
+# Layer: pkg — the package/update infrastructure.
+# Linux (refresh mode): actually refresh the apt/dnf metadata cache -
+# the only test that exercises the real chain (mirrorlists, TLS, repo
+# auth, the package manager's own proxy config). It is the role's
+# single side effect and the only place become is used.
+# Linux (urls mode): plain probes of an explicit URL list.
+# Windows: WSUS (explicit var, else registry policy) or the public
+# Windows Update endpoints; winget sources; SMB shares.
+
+# --- linux: refresh ------------------------------------------------------------
+- name: Refresh the apt metadata cache
+  when:
+    - not _can_i_reach_windows
+    - can_i_reach_repo_enabled
+    - can_i_reach_repo_mode == 'refresh'
+    - ansible_os_family == 'Debian'
+  ansible.builtin.apt:
+    update_cache: true
+  become: "{{ can_i_reach_repo_become }}"
+  register: _can_i_reach_apt_reg
+  check_mode: false
+  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  changed_when: false
+
+- name: Refresh the dnf metadata cache
+  when:
+    - not _can_i_reach_windows
+    - can_i_reach_repo_enabled
+    - can_i_reach_repo_mode == 'refresh'
+    - ansible_os_family == 'RedHat'
+    - ansible_pkg_mgr == 'dnf'
+  ansible.builtin.dnf:
+    update_cache: true
+  become: "{{ can_i_reach_repo_become }}"
+  register: _can_i_reach_dnf_reg
+  check_mode: false
+  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  changed_when: false
+
+- name: Refresh the dnf5 metadata cache
+  when:
+    - not _can_i_reach_windows
+    - can_i_reach_repo_enabled
+    - can_i_reach_repo_mode == 'refresh'
+    - ansible_os_family == 'RedHat'
+    - ansible_pkg_mgr == 'dnf5'
+  ansible.builtin.dnf5:
+    update_cache: true
+  become: "{{ can_i_reach_repo_become }}"
+  register: _can_i_reach_dnf5_reg
+  check_mode: false
+  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  changed_when: false
+
+- name: Record the metadata refresh
+  when:
+    - not _can_i_reach_windows
+    - can_i_reach_repo_enabled
+    - can_i_reach_repo_mode == 'refresh'
+  vars:
+    _supported: "{{ ansible_os_family in ['Debian', 'RedHat'] }}"
+    _r: >-
+      {{ _can_i_reach_apt_reg if ansible_os_family == 'Debian'
+         else (_can_i_reach_dnf5_reg if ansible_pkg_mgr | default('') == 'dnf5'
+               else _can_i_reach_dnf_reg) }}
+    _ok: "{{ not (_r.failed | default(false)) }}"
+    _mgr: "{{ 'apt' if ansible_os_family == 'Debian' else ansible_pkg_mgr | default('dnf') }}"
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
+           'id': 'repo:refresh',
+           'layer': 'pkg',
+           'status': ('ok' if _ok else 'fail') if _supported else 'skipped',
+           'detail': ((_mgr ~ ' metadata refreshed - repositories reachable') if _ok
+                      else (_r.msg | default('refresh failed') | truncate(160))) if _supported
+                     else ('unsupported package manager (' ~ ansible_pkg_mgr | default('unknown')
+                           ~ ') - use repo_mode: urls'),
+           'remediation': ''}]}) }}
+
+# --- linux: url probes -----------------------------------------------------------
+- name: Probe explicit repository urls
+  when:
+    - not _can_i_reach_windows
+    - can_i_reach_repo_enabled
+    - can_i_reach_repo_mode == 'urls'
+  ansible.builtin.uri:
+    url: "{{ _can_i_reach_ru.url }}"
+    status_code: "{{ _can_i_reach_ru.status_codes | default([200]) }}"
+    timeout: "{{ _can_i_reach_ru.timeout | default(can_i_reach_timeout) }}"
+    return_content: false
+  register: _can_i_reach_repourl_reg
+  check_mode: false
+  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  loop: "{{ can_i_reach_repo_urls }}"
+  loop_control:
+    loop_var: _can_i_reach_ru
+    label: "{{ _can_i_reach_ru.name | default(_can_i_reach_ru.url) }}"
+
+- name: Record the repository url probes
+  vars:
+    _ru: "{{ _can_i_reach_r._can_i_reach_ru }}"
+    _ok: "{{ not (_can_i_reach_r.failed | default(false)) }}"
+    _got: "{{ _can_i_reach_r.status | default(-1) }}"
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
+           'id': 'repo:' ~ (_ru.name | default(_ru.url | urlsplit('hostname'))),
+           'layer': 'pkg',
+           'status': 'ok' if _ok else 'fail',
+           'detail': ('status ' ~ _got) if _ok
+                     else ((_can_i_reach_r.msg | default('request failed')) ~ ' (status ' ~ _got ~ ')'),
+           'remediation': ''}]}) }}
+  loop: "{{ (_can_i_reach_repourl_reg.results | default([])) | rejectattr('skipped', 'defined') | list }}"
+  loop_control:
+    loop_var: _can_i_reach_r
+    label: "{{ _can_i_reach_r._can_i_reach_ru.url }}"
+
+# --- windows: WSUS / Windows Update ----------------------------------------------
+- name: Read the WSUS server policy
+  when: _can_i_reach_windows and can_i_reach_wu_enabled
+  ansible.windows.win_reg_stat:
+    path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate
+    name: WUServer
+  register: _can_i_reach_wuserver_reg
+
+- name: Read the UseWUServer policy
+  when: _can_i_reach_windows and can_i_reach_wu_enabled
+  ansible.windows.win_reg_stat:
+    path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU
+    name: UseWUServer
+  register: _can_i_reach_usewu_reg
+
+- name: Determine the effective WSUS server
+  when: _can_i_reach_windows and can_i_reach_wu_enabled
+  ansible.builtin.set_fact:
+    _can_i_reach_wsus: >-
+      {{ can_i_reach_wsus_url if can_i_reach_wsus_url | length > 0
+         else ((_can_i_reach_wuserver_reg.value | default(''))
+               if (_can_i_reach_usewu_reg.value | default(0)) | int == 1 else '') }}
+
+- name: Probe the WSUS client web service
+  when:
+    - _can_i_reach_windows
+    - can_i_reach_wu_enabled
+    - _can_i_reach_wsus | default('') | length > 0
+  ansible.windows.win_uri:
+    url: "{{ _can_i_reach_wsus }}/ClientWebService/client.asmx"
+    status_code: "{{ can_i_reach_wsus_status_codes }}"
+    timeout: "{{ can_i_reach_timeout }}"
+    return_content: false
+  register: _can_i_reach_wsus_reg
+  check_mode: false
+  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+
+- name: Record the WSUS check
+  when:
+    - _can_i_reach_windows
+    - can_i_reach_wu_enabled
+    - _can_i_reach_wsus | default('') | length > 0
+  vars:
+    _ok: "{{ not (_can_i_reach_wsus_reg.failed | default(false)) }}"
+    _got: "{{ _can_i_reach_wsus_reg.status_code | default(-1) }}"
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
+           'id': 'wsus',
+           'layer': 'pkg',
+           'status': 'ok' if _ok else 'fail',
+           'detail': (_can_i_reach_wsus ~ ' answered ' ~ _got) if _ok
+                     else (_can_i_reach_wsus ~ ': '
+                           ~ (_can_i_reach_wsus_reg.msg | default('unreachable')) | truncate(160)),
+           'remediation': ''}]}) }}
+
+- name: Probe the public Windows Update endpoints
+  when:
+    - _can_i_reach_windows
+    - can_i_reach_wu_enabled
+    - _can_i_reach_wsus | default('') | length == 0
+  ansible.windows.win_uri:
+    url: "{{ _can_i_reach_wu.url }}"
+    status_code: "{{ _can_i_reach_wu.status_codes | default([200]) }}"
+    timeout: "{{ can_i_reach_timeout }}"
+    return_content: false
+  register: _can_i_reach_wupub_reg
+  check_mode: false
+  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  loop: "{{ can_i_reach_wu_public_endpoints }}"
+  loop_control:
+    loop_var: _can_i_reach_wu
+    label: "{{ _can_i_reach_wu.name }}"
+
+- name: Record the public Windows Update probes
+  vars:
+    _wu: "{{ _can_i_reach_r._can_i_reach_wu }}"
+    _ok: "{{ not (_can_i_reach_r.failed | default(false)) }}"
+    _got: "{{ _can_i_reach_r.status_code | default(-1) }}"
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
+           'id': 'wu:' ~ _wu.name,
+           'layer': 'pkg',
+           'status': 'ok' if _ok else 'fail',
+           'detail': ('reachable (status ' ~ _got ~ ')') if _ok
+                     else ((_can_i_reach_r.msg | default('unreachable')) | truncate(160)),
+           'remediation': ''}]}) }}
+  loop: "{{ (_can_i_reach_wupub_reg.results | default([])) | rejectattr('skipped', 'defined') | list }}"
+  loop_control:
+    loop_var: _can_i_reach_r
+    label: "{{ _can_i_reach_r._can_i_reach_wu.name }}"
+
+- name: Run a real Windows Update Agent search (deep check)
+  when:
+    - _can_i_reach_windows
+    - can_i_reach_wu_enabled
+    - can_i_reach_wu_deep_check
+  ansible.windows.win_shell: |
+    try {
+      $session = New-Object -ComObject Microsoft.Update.Session
+      $searcher = $session.CreateUpdateSearcher()
+      $result = $searcher.Search("IsInstalled=0 and Type='Software'")
+      @{ok = $true; count = $result.Updates.Count} | ConvertTo-Json -Compress
+    } catch {
+      @{ok = $false; error = $_.Exception.Message} | ConvertTo-Json -Compress
+    }
+  register: _can_i_reach_wua_reg
+  check_mode: false
+  changed_when: false
+  failed_when: >-
+    can_i_reach_fail_fast
+    and not (_can_i_reach_wua_reg.stdout | trim | from_json).ok | default(false)
+
+- name: Record the deep Windows Update search
+  when:
+    - _can_i_reach_windows
+    - can_i_reach_wu_enabled
+    - can_i_reach_wu_deep_check
+  vars:
+    _parsed: "{{ _can_i_reach_wua_reg.stdout | trim | from_json }}"
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
+           'id': 'wu:deep',
+           'layer': 'pkg',
+           'status': 'ok' if _parsed.ok | default(false) else 'fail',
+           'detail': ('update agent search ok (' ~ _parsed.count | default(0) ~ ' updates offered)')
+                     if _parsed.ok | default(false)
+                     else ('update agent search failed: ' ~ (_parsed.error | default('unknown')) | truncate(160)),
+           'remediation': ''}]}) }}
+
+# --- windows: winget ---------------------------------------------------------------
+- name: Probe the winget source endpoints
+  when: _can_i_reach_windows and can_i_reach_winget_enabled
+  ansible.windows.win_uri:
+    url: "{{ _can_i_reach_wg.url }}"
+    status_code: "{{ _can_i_reach_wg.status_codes | default([200]) }}"
+    timeout: "{{ can_i_reach_timeout }}"
+    return_content: false
+  register: _can_i_reach_winget_reg
+  check_mode: false
+  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  loop: "{{ can_i_reach_winget_sources }}"
+  loop_control:
+    loop_var: _can_i_reach_wg
+    label: "{{ _can_i_reach_wg.name }}"
+
+- name: Record the winget source probes
+  vars:
+    _wg: "{{ _can_i_reach_r._can_i_reach_wg }}"
+    _ok: "{{ not (_can_i_reach_r.failed | default(false)) }}"
+    _got: "{{ _can_i_reach_r.status_code | default(-1) }}"
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
+           'id': 'winget:' ~ _wg.name,
+           'layer': 'pkg',
+           'status': 'ok' if _ok else 'fail',
+           'detail': ('reachable (status ' ~ _got ~ ')') if _ok
+                     else ((_can_i_reach_r.msg | default('unreachable')) | truncate(160)),
+           'remediation': ''}]}) }}
+  loop: "{{ (_can_i_reach_winget_reg.results | default([])) | rejectattr('skipped', 'defined') | list }}"
+  loop_control:
+    loop_var: _can_i_reach_r
+    label: "{{ _can_i_reach_r._can_i_reach_wg.name }}"
+
+- name: Probe the sources winget actually has configured
+  when: _can_i_reach_windows and can_i_reach_winget_enabled and can_i_reach_winget_dynamic
+  ansible.windows.win_powershell:
+    script: "{{ lookup('ansible.builtin.file', 'winget_sources.ps1') }}"
+    parameters:
+      TimeoutSec: "{{ can_i_reach_timeout | float }}"
+  register: _can_i_reach_wgdyn_reg
+  failed_when: >-
+    can_i_reach_fail_fast
+    and (_can_i_reach_wgdyn_reg.result.status | default('fail')) == 'fail'
+
+- name: Record the dynamic winget source check
+  when: _can_i_reach_windows and can_i_reach_winget_enabled and can_i_reach_winget_dynamic
+  vars:
+    _res: "{{ _can_i_reach_wgdyn_reg.result | default({}) }}"
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
+           'id': 'winget:configured',
+           'layer': 'pkg',
+           'status': _res.status | default('fail'),
+           'detail': _res.detail | default('probe script error'),
+           'remediation': ''}]}) }}
+
+# --- windows: SMB shares -------------------------------------------------------------
+- name: Probe the SMB shares
+  when: _can_i_reach_windows
+  ansible.windows.win_powershell:
+    script: "{{ lookup('ansible.builtin.file', 'smb_probe.ps1') }}"
+    parameters:
+      Unc: "{{ _can_i_reach_sh.unc }}"
+      TestAccess: "{{ _can_i_reach_sh.test_access | default(true) | bool }}"
+      TimeoutSec: "{{ _can_i_reach_sh.timeout | default(can_i_reach_timeout) | float }}"
+  register: _can_i_reach_smb_reg
+  failed_when: >-
+    can_i_reach_fail_fast
+    and (_can_i_reach_smb_reg.result.status | default('fail')) == 'fail'
+  loop: "{{ can_i_reach_smb_shares }}"
+  loop_control:
+    loop_var: _can_i_reach_sh
+    label: "{{ _can_i_reach_sh.name | default(_can_i_reach_sh.unc) }}"
+
+- name: Record the SMB share probes
+  when: _can_i_reach_windows
+  vars:
+    _sh: "{{ _can_i_reach_r._can_i_reach_sh }}"
+    _res: "{{ _can_i_reach_r.result | default({}) }}"
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
+           'id': 'smb:' ~ (_sh.name | default(_sh.unc)),
+           'layer': 'pkg',
+           'status': _res.status | default('fail'),
+           'detail': _res.detail | default('probe script error'),
+           'remediation': ''}]}) }}
+  loop: "{{ (_can_i_reach_smb_reg.results | default([])) | rejectattr('skipped', 'defined') | list }}"
+  loop_control:
+    loop_var: _can_i_reach_r
+    label: "{{ _can_i_reach_r._can_i_reach_sh.unc }}"

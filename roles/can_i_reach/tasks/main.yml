@@ -1,0 +1,66 @@
+---
+# Facts are needed for the OS dispatch (and apt/dnf selection). The
+# gather_facts action is connection-aware, so this works over SSH,
+# WinRM and psrp alike when the play ran with gather_facts: false.
+- name: Gather facts if the play skipped them
+  ansible.builtin.gather_facts:
+  when: ansible_os_family is not defined
+
+- name: Validate the configuration
+  ansible.builtin.include_tasks: validate.yml
+
+- name: Initialize the result
+  ansible.builtin.set_fact:
+    can_i_reach_result:
+      checks: []
+      remediations_applied: []
+    _can_i_reach_windows: "{{ ansible_os_family == 'Windows' }}"
+
+- name: Run the check suite
+  ansible.builtin.include_tasks: "{{ _can_i_reach_suite_file }}"
+  loop:
+    - checks_endpoints.yml
+    - checks_dns.yml
+    - checks_dc.yml
+    - checks_time.yml
+    - checks_proxy.yml
+    - checks_pkg.yml
+  loop_control:
+    loop_var: _can_i_reach_suite_file
+
+- name: Apply the check allowlist
+  when: can_i_reach_checks | length > 0
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result
+         | combine({'checks': can_i_reach_result.checks
+             | selectattr('id', 'in', can_i_reach_checks) | list}) }}
+
+- name: Apply requested remediations for failed checks
+  ansible.builtin.include_tasks: remediate.yml
+  loop: "{{ can_i_reach_remediate }}"
+  loop_control:
+    loop_var: _can_i_reach_fix
+
+- name: Re-run the check suite after remediation
+  when: can_i_reach_result.remediations_applied | length > 0
+  block:
+    - name: Reset check results for the verification pass
+      ansible.builtin.set_fact:
+        can_i_reach_result: >-
+          {{ can_i_reach_result | combine({'checks': []}) }}
+
+    - name: Verify remediations
+      ansible.builtin.include_tasks: "{{ _can_i_reach_suite_file }}"
+      loop:
+        - checks_endpoints.yml
+        - checks_dns.yml
+        - checks_dc.yml
+        - checks_time.yml
+        - checks_proxy.yml
+        - checks_pkg.yml
+      loop_control:
+        loop_var: _can_i_reach_suite_file
+
+- name: Report
+  ansible.builtin.include_tasks: report.yml

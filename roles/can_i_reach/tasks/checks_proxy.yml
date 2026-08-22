@@ -1,0 +1,143 @@
+---
+# Layer: proxy — each proxy is proven by fetching its test_urls THROUGH
+# it (environment variables drive urllib on Linux; win_uri has native
+# proxy support). can_i_reach_forbidden_urls is the negative check for
+# proxy-only environments: a successful DIRECT fetch is a failure.
+# Note: proxy credentials ride in the task environment on Linux (never
+# registered); win_uri's proxy_password is no_log internally.
+
+- name: Build the proxy test matrix
+  ansible.builtin.set_fact:
+    _can_i_reach_px_pairs: []
+
+- name: Expand proxies against their test urls
+  ansible.builtin.set_fact:
+    _can_i_reach_px_pairs: >-
+      {{ _can_i_reach_px_pairs + ([_can_i_reach_px] | product(_can_i_reach_px.test_urls) | list) }}
+  loop: "{{ can_i_reach_proxies }}"
+  loop_control:
+    loop_var: _can_i_reach_px
+    label: "{{ _can_i_reach_px.name | default(_can_i_reach_px.url) }}"
+
+- name: Fetch test urls through each proxy
+  when: not _can_i_reach_windows
+  vars:
+    _creds: >-
+      {{ (_can_i_reach_p.0.username ~ ':' ~ _can_i_reach_p.0.password ~ '@')
+         if _can_i_reach_p.0.username is defined else '' }}
+    _proxy_url: "{{ _can_i_reach_p.0.url | regex_replace('^(https?://)', '\\1' ~ _creds) }}"
+  ansible.builtin.uri:
+    url: "{{ _can_i_reach_p.1 }}"
+    status_code: "{{ _can_i_reach_p.0.status_codes | default([200, 204, 301, 302]) }}"
+    timeout: "{{ _can_i_reach_p.0.timeout | default(can_i_reach_timeout) }}"
+    validate_certs: "{{ _can_i_reach_p.0.validate_certs | default(true) }}"
+    follow_redirects: safe
+    return_content: false
+  environment:
+    http_proxy: "{{ _proxy_url }}"
+    https_proxy: "{{ _proxy_url }}"
+    no_proxy: ""
+  register: _can_i_reach_proxy_reg
+  check_mode: false
+  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  loop: "{{ _can_i_reach_px_pairs }}"
+  loop_control:
+    loop_var: _can_i_reach_p
+    label: "{{ _can_i_reach_p.1 }} via {{ _can_i_reach_p.0.name | default(_can_i_reach_p.0.url) }}"
+
+- name: Fetch test urls through each proxy (windows)
+  when: _can_i_reach_windows
+  ansible.windows.win_uri:
+    url: "{{ _can_i_reach_p.1 }}"
+    status_code: "{{ _can_i_reach_p.0.status_codes | default([200, 204, 301, 302]) }}"
+    timeout: "{{ _can_i_reach_p.0.timeout | default(can_i_reach_timeout) }}"
+    validate_certs: "{{ _can_i_reach_p.0.validate_certs | default(true) }}"
+    proxy_url: "{{ _can_i_reach_p.0.url }}"
+    proxy_username: "{{ _can_i_reach_p.0.username | default(omit) }}"
+    proxy_password: "{{ _can_i_reach_p.0.password | default(omit) }}"
+    return_content: false
+  register: _can_i_reach_proxy_reg_win
+  check_mode: false
+  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  loop: "{{ _can_i_reach_px_pairs }}"
+  loop_control:
+    loop_var: _can_i_reach_p
+    label: "{{ _can_i_reach_p.1 }} via {{ _can_i_reach_p.0.name | default(_can_i_reach_p.0.url) }}"
+
+- name: Record proxy results
+  vars:
+    _px: "{{ _can_i_reach_r._can_i_reach_p.0 }}"
+    _url: "{{ _can_i_reach_r._can_i_reach_p.1 }}"
+    _ok: "{{ not (_can_i_reach_r.failed | default(false)) }}"
+    _got: "{{ _can_i_reach_r.status | default(_can_i_reach_r.status_code | default(-1)) }}"
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
+           'id': 'proxy:' ~ (_px.name | default(_px.url | urlsplit('hostname')))
+                 ~ ':' ~ (_url | urlsplit('hostname')),
+           'layer': 'proxy',
+           'status': 'ok' if _ok else 'fail',
+           'detail': ('status ' ~ _got ~ ' via proxy') if _ok
+                     else ((_can_i_reach_r.msg | default('request failed')) ~ ' (status ' ~ _got ~ ')'),
+           'remediation': ''}]}) }}
+  loop: >-
+    {{ ((_can_i_reach_proxy_reg_win if _can_i_reach_windows else _can_i_reach_proxy_reg).results
+        | default([])) | rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    loop_var: _can_i_reach_r
+    label: "{{ _can_i_reach_r._can_i_reach_p.1 }}"
+
+# --- direct egress must be blocked ---------------------------------------------
+- name: Verify direct egress is blocked
+  when: not _can_i_reach_windows
+  ansible.builtin.uri:
+    url: "{{ _can_i_reach_fu }}"
+    timeout: "{{ can_i_reach_timeout }}"
+    validate_certs: false
+    return_content: false
+  register: _can_i_reach_noegress_reg
+  check_mode: false
+  failed_when: >-
+    can_i_reach_fail_fast
+    and (_can_i_reach_noegress_reg.status | default(-1)) | int > 0
+  loop: "{{ can_i_reach_forbidden_urls }}"
+  loop_control:
+    loop_var: _can_i_reach_fu
+    label: "{{ _can_i_reach_fu }}"
+
+- name: Verify direct egress is blocked (windows)
+  when: _can_i_reach_windows
+  ansible.windows.win_uri:
+    url: "{{ _can_i_reach_fu }}"
+    timeout: "{{ can_i_reach_timeout }}"
+    validate_certs: false
+    return_content: false
+  register: _can_i_reach_noegress_reg_win
+  check_mode: false
+  failed_when: >-
+    can_i_reach_fail_fast
+    and (_can_i_reach_noegress_reg_win.status_code | default(-1)) | int > 0
+  loop: "{{ can_i_reach_forbidden_urls }}"
+  loop_control:
+    loop_var: _can_i_reach_fu
+    label: "{{ _can_i_reach_fu }}"
+
+- name: Record the egress lockdown checks
+  vars:
+    _got: "{{ _can_i_reach_r.status | default(_can_i_reach_r.status_code | default(-1)) }}"
+    _blocked: "{{ _got | int <= 0 }}"
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
+           'id': 'noegress:' ~ (_can_i_reach_r._can_i_reach_fu | urlsplit('hostname')),
+           'layer': 'proxy',
+           'status': 'ok' if _blocked else 'fail',
+           'detail': 'correctly blocked (no direct route)' if _blocked
+                     else ('REACHABLE without proxy (status ' ~ _got ~ ') - egress lockdown is not in effect'),
+           'remediation': ''}]}) }}
+  loop: >-
+    {{ ((_can_i_reach_noegress_reg_win if _can_i_reach_windows else _can_i_reach_noegress_reg).results
+        | default([])) | rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    loop_var: _can_i_reach_r
+    label: "{{ _can_i_reach_r._can_i_reach_fu }}"

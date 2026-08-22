@@ -1,0 +1,252 @@
+---
+# Layer: endpoint — the generic "can I reach host:port / url" checks.
+# Every probe is a flat module loop that never fails on its own unless
+# can_i_reach_fail_fast is set; the Record tasks fold the registered
+# results into can_i_reach_result.
+
+- name: Classify endpoint entries
+  ansible.builtin.set_fact:
+    _can_i_reach_ep_plain: >-
+      {{ (can_i_reach_endpoints | rejectattr('protocol', 'defined') | list
+          + can_i_reach_endpoints | selectattr('protocol', 'defined')
+            | selectattr('protocol', 'eq', 'tcp') | list)
+         | rejectattr('path', 'defined') | list }}
+    _can_i_reach_ep_http: >-
+      {{ (can_i_reach_endpoints | rejectattr('protocol', 'defined') | list
+          + can_i_reach_endpoints | selectattr('protocol', 'defined')
+            | selectattr('protocol', 'eq', 'tcp') | list)
+         | selectattr('path', 'defined') | list }}
+    _can_i_reach_ep_udp: >-
+      {{ can_i_reach_endpoints | selectattr('protocol', 'defined')
+         | selectattr('protocol', 'eq', 'udp') | list }}
+    _can_i_reach_ep_icmp: >-
+      {{ can_i_reach_endpoints | selectattr('protocol', 'defined')
+         | selectattr('protocol', 'eq', 'icmp') | list }}
+
+# --- tcp ---------------------------------------------------------------------
+- name: Probe TCP endpoints
+  when: not _can_i_reach_windows
+  ansible.builtin.wait_for:
+    host: "{{ _can_i_reach_ep.host }}"
+    port: "{{ _can_i_reach_ep.port }}"
+    timeout: "{{ _can_i_reach_ep.timeout | default(can_i_reach_timeout) }}"
+  register: _can_i_reach_tcp_reg
+  check_mode: false
+  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  loop: "{{ _can_i_reach_ep_plain }}"
+  loop_control:
+    loop_var: _can_i_reach_ep
+    label: "{{ _can_i_reach_ep.host }}:{{ _can_i_reach_ep.port }}"
+
+- name: Probe TCP endpoints (windows)
+  when: _can_i_reach_windows
+  ansible.windows.win_wait_for:
+    host: "{{ _can_i_reach_ep.host }}"
+    port: "{{ _can_i_reach_ep.port }}"
+    timeout: "{{ _can_i_reach_ep.timeout | default(can_i_reach_timeout) }}"
+  register: _can_i_reach_tcp_reg_win
+  check_mode: false
+  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  loop: "{{ _can_i_reach_ep_plain }}"
+  loop_control:
+    loop_var: _can_i_reach_ep
+    label: "{{ _can_i_reach_ep.host }}:{{ _can_i_reach_ep.port }}"
+
+- name: Record TCP endpoint results
+  vars:
+    _ep: "{{ _can_i_reach_r._can_i_reach_ep }}"
+    _ok: "{{ not (_can_i_reach_r.failed | default(false)) }}"
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
+           'id': _ep.name | default('tcp:' ~ _ep.host ~ ':' ~ _ep.port),
+           'layer': 'endpoint',
+           'status': 'ok' if _ok else 'fail',
+           'detail': ('connected in ' ~ (_can_i_reach_r.elapsed | default(0)) ~ 's') if _ok
+                     else (_can_i_reach_r.msg | default('unreachable')),
+           'remediation': ''}]}) }}
+  loop: >-
+    {{ ((_can_i_reach_tcp_reg_win if _can_i_reach_windows else _can_i_reach_tcp_reg).results
+        | default([])) | rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    loop_var: _can_i_reach_r
+    label: "{{ _can_i_reach_r._can_i_reach_ep.host }}:{{ _can_i_reach_r._can_i_reach_ep.port }}"
+
+# --- udp ---------------------------------------------------------------------
+- name: Probe UDP endpoints
+  when: not _can_i_reach_windows
+  mcowser_p.can_i_reach.udp_probe:
+    host: "{{ _can_i_reach_ep.host }}"
+    port: "{{ _can_i_reach_ep.port }}"
+    timeout: "{{ _can_i_reach_ep.timeout | default(can_i_reach_timeout) }}"
+    tries: "{{ can_i_reach_tries }}"
+    expect_reply: "{{ _can_i_reach_ep.expect_reply | default(false) }}"
+  register: _can_i_reach_udp_reg
+  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  loop: "{{ _can_i_reach_ep_udp }}"
+  loop_control:
+    loop_var: _can_i_reach_ep
+    label: "{{ _can_i_reach_ep.host }}:{{ _can_i_reach_ep.port }}"
+
+- name: Probe UDP endpoints (windows)
+  when: _can_i_reach_windows
+  ansible.windows.win_powershell:
+    script: "{{ lookup('ansible.builtin.file', 'udp_probe.ps1') }}"
+    parameters:
+      TargetHost: "{{ _can_i_reach_ep.host }}"
+      Port: "{{ _can_i_reach_ep.port | int }}"
+      TimeoutSec: "{{ _can_i_reach_ep.timeout | default(can_i_reach_timeout) | float }}"
+      Tries: "{{ can_i_reach_tries | int }}"
+      Payload: empty
+      ExpectReply: "{{ _can_i_reach_ep.expect_reply | default(false) | bool }}"
+  register: _can_i_reach_udp_reg_win
+  failed_when: >-
+    can_i_reach_fail_fast
+    and (_can_i_reach_udp_reg_win.result.status | default('fail')) == 'fail'
+  loop: "{{ _can_i_reach_ep_udp }}"
+  loop_control:
+    loop_var: _can_i_reach_ep
+    label: "{{ _can_i_reach_ep.host }}:{{ _can_i_reach_ep.port }}"
+
+- name: Record UDP endpoint results
+  vars:
+    _ep: "{{ _can_i_reach_r._can_i_reach_ep }}"
+    _status: >-
+      {{ (_can_i_reach_r.result.status | default('fail')) if _can_i_reach_windows
+         else ('fail' if _can_i_reach_r.failed | default(false)
+               else ('ok' if _can_i_reach_r.state | default('') == 'responded' else 'warn')) }}
+    _detail: >-
+      {{ (_can_i_reach_r.result.detail | default('probe script error')) if _can_i_reach_windows
+         else (_can_i_reach_r.detail | default(_can_i_reach_r.msg | default('no detail'))) }}
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
+           'id': _ep.name | default('udp:' ~ _ep.host ~ ':' ~ _ep.port),
+           'layer': 'endpoint',
+           'status': _status,
+           'detail': _detail,
+           'remediation': ''}]}) }}
+  loop: >-
+    {{ ((_can_i_reach_udp_reg_win if _can_i_reach_windows else _can_i_reach_udp_reg).results
+        | default([])) | rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    loop_var: _can_i_reach_r
+    label: "{{ _can_i_reach_r._can_i_reach_ep.host }}:{{ _can_i_reach_r._can_i_reach_ep.port }}"
+
+# --- http(s) -----------------------------------------------------------------
+- name: Probe HTTP endpoints
+  when: not _can_i_reach_windows
+  vars:
+    _scheme: >-
+      {{ _can_i_reach_ep.scheme
+         | default('https' if _can_i_reach_ep.port | int in [443, 8443] else 'http') }}
+  ansible.builtin.uri:
+    url: "{{ _scheme }}://{{ _can_i_reach_ep.host }}:{{ _can_i_reach_ep.port }}{{ _can_i_reach_ep.path }}"
+    status_code: "{{ _can_i_reach_ep.status_codes | default([200]) }}"
+    validate_certs: "{{ _can_i_reach_ep.validate_certs | default(true) }}"
+    timeout: "{{ _can_i_reach_ep.timeout | default(can_i_reach_timeout) }}"
+    follow_redirects: safe
+    return_content: false
+  register: _can_i_reach_http_reg
+  check_mode: false
+  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  loop: "{{ _can_i_reach_ep_http }}"
+  loop_control:
+    loop_var: _can_i_reach_ep
+    label: "{{ _can_i_reach_ep.host }}:{{ _can_i_reach_ep.port }}{{ _can_i_reach_ep.path }}"
+
+- name: Probe HTTP endpoints (windows)
+  when: _can_i_reach_windows
+  vars:
+    _scheme: >-
+      {{ _can_i_reach_ep.scheme
+         | default('https' if _can_i_reach_ep.port | int in [443, 8443] else 'http') }}
+  ansible.windows.win_uri:
+    url: "{{ _scheme }}://{{ _can_i_reach_ep.host }}:{{ _can_i_reach_ep.port }}{{ _can_i_reach_ep.path }}"
+    status_code: "{{ _can_i_reach_ep.status_codes | default([200]) }}"
+    validate_certs: "{{ _can_i_reach_ep.validate_certs | default(true) }}"
+    timeout: "{{ _can_i_reach_ep.timeout | default(can_i_reach_timeout) }}"
+    return_content: false
+  register: _can_i_reach_http_reg_win
+  check_mode: false
+  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  loop: "{{ _can_i_reach_ep_http }}"
+  loop_control:
+    loop_var: _can_i_reach_ep
+    label: "{{ _can_i_reach_ep.host }}:{{ _can_i_reach_ep.port }}{{ _can_i_reach_ep.path }}"
+
+- name: Record HTTP endpoint results
+  vars:
+    _ep: "{{ _can_i_reach_r._can_i_reach_ep }}"
+    _ok: "{{ not (_can_i_reach_r.failed | default(false)) }}"
+    _got: "{{ _can_i_reach_r.status | default(_can_i_reach_r.status_code | default(-1)) }}"
+    _scheme: >-
+      {{ _ep.scheme | default('https' if _ep.port | int in [443, 8443] else 'http') }}
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
+           'id': _ep.name | default(_scheme ~ ':' ~ _ep.host ~ ':' ~ _ep.port),
+           'layer': 'endpoint',
+           'status': 'ok' if _ok else 'fail',
+           'detail': ('status ' ~ _got ~ ' from ' ~ _ep.path) if _ok
+                     else (_can_i_reach_r.msg | default('request failed') ~ ' (status ' ~ _got ~ ')'),
+           'remediation': ''}]}) }}
+  loop: >-
+    {{ ((_can_i_reach_http_reg_win if _can_i_reach_windows else _can_i_reach_http_reg).results
+        | default([])) | rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    loop_var: _can_i_reach_r
+    label: "{{ _can_i_reach_r._can_i_reach_ep.host }}:{{ _can_i_reach_r._can_i_reach_ep.port }}"
+
+# --- icmp ---------------------------------------------------------------------
+- name: Probe ICMP endpoints
+  when: not _can_i_reach_windows
+  ansible.builtin.command:
+    argv:
+      - ping
+      - -c
+      - "1"
+      - -W
+      - "{{ _can_i_reach_ep.timeout | default(can_i_reach_timeout) | int }}"
+      - "{{ _can_i_reach_ep.host }}"
+  register: _can_i_reach_icmp_reg
+  check_mode: false
+  changed_when: false
+  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  loop: "{{ _can_i_reach_ep_icmp }}"
+  loop_control:
+    loop_var: _can_i_reach_ep
+    label: "{{ _can_i_reach_ep.host }}"
+
+- name: Probe ICMP endpoints (windows)
+  when: _can_i_reach_windows
+  ansible.windows.win_shell: |
+    if (Test-Connection -ComputerName '{{ _can_i_reach_ep.host }}' -Count 1 -Quiet) { exit 0 } else { exit 1 }
+  register: _can_i_reach_icmp_reg_win
+  check_mode: false
+  changed_when: false
+  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  loop: "{{ _can_i_reach_ep_icmp }}"
+  loop_control:
+    loop_var: _can_i_reach_ep
+    label: "{{ _can_i_reach_ep.host }}"
+
+- name: Record ICMP endpoint results
+  vars:
+    _ep: "{{ _can_i_reach_r._can_i_reach_ep }}"
+    _ok: "{{ _can_i_reach_r.rc | default(1) == 0 }}"
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
+           'id': _ep.name | default('icmp:' ~ _ep.host),
+           'layer': 'endpoint',
+           'status': 'ok' if _ok else 'fail',
+           'detail': 'ICMP reply received' if _ok
+                     else 'no ICMP reply (host down, or ICMP filtered)',
+           'remediation': ''}]}) }}
+  loop: >-
+    {{ ((_can_i_reach_icmp_reg_win if _can_i_reach_windows else _can_i_reach_icmp_reg).results
+        | default([])) | rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    loop_var: _can_i_reach_r
+    label: "{{ _can_i_reach_r._can_i_reach_ep.host }}"

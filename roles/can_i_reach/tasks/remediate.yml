@@ -1,0 +1,86 @@
+---
+# One remediation id per include (loop_var _can_i_reach_fix). A fix
+# runs ONLY when some check actually failed (or warned) pointing at it,
+# and the whole suite re-runs afterwards to verify. Connectivity
+# faults mostly live in firewalls and infrastructure, so the honest
+# fix list is short: sync_time, flush_dns. Linux fixes escalate.
+
+- name: Decide whether this fix is needed
+  ansible.builtin.set_fact:
+    _can_i_reach_fix_needed: >-
+      {{ can_i_reach_result.checks
+         | selectattr('status', 'in', ['fail', 'warn'])
+         | selectattr('remediation', 'match', '^' ~ _can_i_reach_fix)
+         | list | length > 0 }}
+
+- name: Apply the fix
+  when: _can_i_reach_fix_needed
+  block:
+    # --- sync_time ---
+    - name: Step the clock with chrony
+      when: _can_i_reach_fix == 'sync_time' and not _can_i_reach_windows
+      ansible.builtin.command:
+        argv: [chronyc, makestep]
+      become: true
+      changed_when: true
+      failed_when: false
+
+    - name: Restart chronyd
+      when: _can_i_reach_fix == 'sync_time' and not _can_i_reach_windows
+      ansible.builtin.systemd_service:
+        name: chronyd
+        state: restarted
+      become: true
+      register: _can_i_reach_chrony_restart
+      ignore_errors: true
+
+    - name: Restart chrony (debian unit name)
+      when:
+        - _can_i_reach_fix == 'sync_time'
+        - not _can_i_reach_windows
+        - _can_i_reach_chrony_restart is failed
+      ansible.builtin.systemd_service:
+        name: chrony
+        state: restarted
+      become: true
+      failed_when: false
+
+    - name: Force a time resync (windows)
+      when: _can_i_reach_fix == 'sync_time' and _can_i_reach_windows
+      ansible.windows.win_shell: w32tm /resync /force
+      changed_when: true
+      failed_when: false
+
+    # --- flush_dns ---
+    - name: Flush the resolver cache
+      when: _can_i_reach_fix == 'flush_dns' and not _can_i_reach_windows
+      ansible.builtin.command:
+        argv: [resolvectl, flush-caches]
+      become: true
+      changed_when: true
+      register: _can_i_reach_flush
+      ignore_errors: true
+
+    - name: Restart systemd-resolved as a fallback
+      when:
+        - _can_i_reach_fix == 'flush_dns'
+        - not _can_i_reach_windows
+        - _can_i_reach_flush is failed
+      ansible.builtin.systemd_service:
+        name: systemd-resolved
+        state: restarted
+      become: true
+      failed_when: false
+
+    - name: Flush the DNS client cache (windows)
+      when: _can_i_reach_fix == 'flush_dns' and _can_i_reach_windows
+      ansible.windows.win_shell: Clear-DnsClientCache
+      changed_when: true
+      failed_when: false
+
+    - name: Record the applied fix
+      ansible.builtin.set_fact:
+        can_i_reach_result: >-
+          {{ can_i_reach_result
+             | combine({'remediations_applied':
+                  can_i_reach_result.remediations_applied + [_can_i_reach_fix]}) }}

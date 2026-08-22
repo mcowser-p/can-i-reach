@@ -1,0 +1,113 @@
+---
+# Layer: time — Kerberos dies beyond 5 minutes of skew, so reaching a
+# working time source is part of "can I live here". Linux sends a real
+# NTP v4 client packet and validates the reply; Windows uses w32tm
+# stripchart (and can discover the configured source first). Falls
+# back to the domain controllers when no explicit sources are given.
+
+- name: Determine the time sources
+  ansible.builtin.set_fact:
+    _can_i_reach_time_srcs: >-
+      {{ can_i_reach_time_sources if can_i_reach_time_sources | length > 0
+         else can_i_reach_domain_controllers }}
+
+- name: Exchange NTP with each time source
+  when: not _can_i_reach_windows
+  mcowser_p.can_i_reach.udp_probe:
+    host: "{{ _can_i_reach_ts.address }}"
+    port: 123
+    payload: ntp
+    expect_reply: true
+    timeout: "{{ can_i_reach_timeout }}"
+    tries: "{{ can_i_reach_tries }}"
+  register: _can_i_reach_ntp_reg
+  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  loop: "{{ _can_i_reach_time_srcs }}"
+  loop_control:
+    loop_var: _can_i_reach_ts
+    label: "{{ _can_i_reach_ts.name | default(_can_i_reach_ts.address) }}"
+
+- name: Record NTP results
+  vars:
+    _ts: "{{ _can_i_reach_r._can_i_reach_ts }}"
+    _ok: "{{ not (_can_i_reach_r.failed | default(false)) }}"
+    _dr: "{{ ' [DR]' if _ts.dr | default(false) else '' }}"
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
+           'id': 'ntp:' ~ (_ts.name | default(_ts.address)),
+           'layer': 'time',
+           'status': 'ok' if _ok else 'fail',
+           'detail': (_can_i_reach_r.detail | default(_can_i_reach_r.msg | default('no detail'))) ~ _dr,
+           'remediation': '' if _ok else 'sync_time'}]}) }}
+  loop: "{{ (_can_i_reach_ntp_reg.results | default([])) | rejectattr('skipped', 'defined') | list }}"
+  loop_control:
+    loop_var: _can_i_reach_r
+    label: "{{ _can_i_reach_r._can_i_reach_ts.address }}"
+
+# --- windows -------------------------------------------------------------------
+- name: Exchange time with each source via w32tm (windows)
+  when: _can_i_reach_windows and _can_i_reach_time_srcs | length > 0
+  ansible.windows.win_powershell:
+    script: "{{ lookup('ansible.builtin.file', 'time_probe.ps1') }}"
+    parameters:
+      Source: "{{ _can_i_reach_ts.address }}"
+      TimeoutSec: "{{ can_i_reach_timeout | float }}"
+  register: _can_i_reach_w32_reg
+  failed_when: >-
+    can_i_reach_fail_fast
+    and (_can_i_reach_w32_reg.result.status | default('fail')) == 'fail'
+  loop: "{{ _can_i_reach_time_srcs }}"
+  loop_control:
+    loop_var: _can_i_reach_ts
+    label: "{{ _can_i_reach_ts.name | default(_can_i_reach_ts.address) }}"
+
+- name: Record w32tm results
+  when: _can_i_reach_windows
+  vars:
+    _ts: "{{ _can_i_reach_r._can_i_reach_ts }}"
+    _res: "{{ _can_i_reach_r.result | default({}) }}"
+    _dr: "{{ ' [DR]' if _ts.dr | default(false) else '' }}"
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
+           'id': 'w32time:' ~ (_ts.name | default(_ts.address)),
+           'layer': 'time',
+           'status': _res.status | default('fail'),
+           'detail': (_res.detail | default('probe script error')) ~ _dr,
+           'remediation': '' if _res.status | default('fail') == 'ok' else 'sync_time'}]}) }}
+  loop: "{{ (_can_i_reach_w32_reg.results | default([])) | rejectattr('skipped', 'defined') | list }}"
+  loop_control:
+    loop_var: _can_i_reach_r
+    label: "{{ _can_i_reach_r._can_i_reach_ts.address }}"
+
+- name: Discover and test the configured time source (windows)
+  when:
+    - _can_i_reach_windows
+    - _can_i_reach_time_srcs | length == 0
+    - can_i_reach_time_discover_windows
+  ansible.windows.win_powershell:
+    script: "{{ lookup('ansible.builtin.file', 'time_probe.ps1') }}"
+    parameters:
+      Discover: true
+      TimeoutSec: "{{ can_i_reach_timeout | float }}"
+  register: _can_i_reach_w32auto_reg
+  failed_when: >-
+    can_i_reach_fail_fast
+    and (_can_i_reach_w32auto_reg.result.status | default('fail')) == 'fail'
+
+- name: Record the discovered time source check
+  when:
+    - _can_i_reach_windows
+    - _can_i_reach_time_srcs | length == 0
+    - can_i_reach_time_discover_windows
+  vars:
+    _res: "{{ _can_i_reach_w32auto_reg.result | default({}) }}"
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
+           'id': 'w32time:' ~ (_res.source | default('auto')),
+           'layer': 'time',
+           'status': _res.status | default('fail'),
+           'detail': _res.detail | default('probe script error'),
+           'remediation': '' if _res.status | default('fail') == 'ok' else 'sync_time'}]}) }}

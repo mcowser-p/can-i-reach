@@ -1,0 +1,46 @@
+---
+- name: Print the report
+  vars:
+    _failed: "{{ can_i_reach_result.checks | selectattr('status', 'eq', 'fail') | list }}"
+    _warned: "{{ can_i_reach_result.checks | selectattr('status', 'eq', 'warn') | list }}"
+  ansible.builtin.debug:
+    msg: |-
+      can-i-reach report ({{ can_i_reach_result.checks | length }} checks):
+      {% for c in can_i_reach_result.checks %}
+        [{{ '%-4s' | format(c.status | upper) }}] {{ '%-8s' | format(c.layer) }} {{ '%-30s' | format(c.id) }} {{ c.detail }}
+      {% if c.status in ['fail', 'warn'] and c.remediation | default('') | length > 0 %}
+               remediation: {{ c.remediation }}
+      {% endif %}
+      {% endfor %}
+      {% if can_i_reach_result.remediations_applied | length > 0 %}
+      remediations applied: {{ can_i_reach_result.remediations_applied | join(', ') }}
+      {% endif %}
+      verdict: {{ _failed | length }} failed, {{ _warned | length }} warnings
+
+- name: Write the report file
+  when: can_i_reach_report_path | length > 0
+  ansible.builtin.copy:
+    content: "{{ can_i_reach_result | to_nice_yaml(indent=2) }}"
+    dest: "{{ can_i_reach_report_path }}"
+    mode: "0644"
+
+- name: Enforce the failure policy
+  vars:
+    _failed: "{{ can_i_reach_result.checks | selectattr('status', 'eq', 'fail') | list }}"
+    _warned: "{{ can_i_reach_result.checks | selectattr('status', 'eq', 'warn') | list }}"
+  ansible.builtin.assert:
+    that: >-
+      can_i_reach_fail_on == 'never'
+      or (can_i_reach_fail_on == 'fail' and _failed | length == 0)
+      or (can_i_reach_fail_on == 'warn' and _failed | length == 0 and _warned | length == 0)
+    fail_msg: |-
+      can-i-reach found problems ({{ _failed | length }} failed, {{ _warned | length }} warnings):
+      {% for c in _failed + _warned %}
+        - {{ c.id }}: {{ c.detail }}
+      {% endfor %}
+    success_msg: >-
+      {{ 'reachability confirmed'
+         if _failed | length == 0 and _warned | length == 0
+         else "policy '" ~ can_i_reach_fail_on ~ "' satisfied despite findings" }}
+      ({{ can_i_reach_result.checks | length }} checks,
+      {{ _failed | length }} failed, {{ _warned | length }} warnings)

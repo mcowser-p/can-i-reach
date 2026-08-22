@@ -1,0 +1,154 @@
+---
+# defaults for mcowser_p.can_i_reach.can_i_reach
+# Everything is org-configurable — no organization-specific values ship
+# here. All probes run FROM the managed host and test its OUTBOUND
+# reachability; the Ansible transport (SSH/WinRM) working is a
+# prerequisite, not a check. Checks that cannot run on a platform
+# degrade to status=skipped with a hint, never to silent success.
+#
+# Check ids (for the allowlist and report): item `name` when given,
+# otherwise generated — tcp:HOST:PORT, udp:HOST:PORT, icmp:HOST,
+# http(s):HOST:PORT, dns:QNAME[/QTYPE], dns@SERVER:QNAME[/QTYPE],
+# dc:DC, ad:srv_ldap, ntp:SOURCE, w32time:SOURCE, proxy:PROXY:URLHOST,
+# noegress:URLHOST, repo:refresh, repo:NAME, wsus, wu:NAME,
+# winget:NAME, smb:NAME.
+
+# --- Scope and policy -------------------------------------------------------
+can_i_reach_checks: []            # empty = every applicable check;
+                                  # otherwise an allowlist of check ids
+can_i_reach_remediate: []         # EXPLICIT remediation ids; there is no
+                                  # 'all'. A fix only runs when a check
+                                  # actually failed/warned pointing at it.
+                                  # Available: sync_time, flush_dns
+can_i_reach_fail_on: fail         # fail | warn | never
+can_i_reach_fail_fast: false      # true = abort at the first failing
+                                  # probe batch instead of collecting
+                                  # everything for the report
+can_i_reach_report_path: ""       # optional YAML report on the target
+can_i_reach_timeout: 5            # seconds, per probe; every list item
+                                  # below accepts its own `timeout`
+can_i_reach_tries: 2              # datagram retransmits (UDP/DNS probes)
+
+# --- Generic endpoints ------------------------------------------------------
+# What "confirm connectivity to a remote target" takes as input.
+# `path` turns the entry into an HTTP(S) check; `scheme` defaults to
+# https on 443/8443, else http. UDP epistemics: silence proves nothing,
+# so a silent UDP probe records `warn` (open|filtered) unless
+# expect_reply=true makes silence a `fail`; ICMP port-unreachable is a
+# definitive `fail`.
+can_i_reach_endpoints: []
+#  - {host: 10.40.1.15, port: 8443}                        # tcp by default
+#  - {name: syslog, host: log.corp.example, port: 514, protocol: udp}
+#  - {host: vip.corp.example, port: 443, path: /healthz,
+#     status_codes: [200, 204], validate_certs: false}
+#  - {name: gw-ping, host: 10.40.0.1, protocol: icmp}
+#  - {host: repo.corp.example, port: 8081, path: /repository/pypi/,
+#     scheme: http, timeout: 10}
+
+# --- DNS --------------------------------------------------------------------
+# Each query runs against the system resolver (when
+# can_i_reach_dns_use_system) AND directly against every server in
+# can_i_reach_dns_servers — plus the domain controllers below when
+# can_i_reach_dc_dns is true, which is how "DNS is accessible on the
+# DCs and DR DCs" is proven. Direct queries speak raw DNS to the
+# server; no dig/nslookup needed on the target.
+can_i_reach_dns_queries: []
+#  - {name: corp.example}                                  # A by default
+#  - {name: sql01.corp.example, expected_values: [10.40.2.11]}
+#  - {name: _ldap._tcp.corp.example, qtype: SRV}
+#  - {name: 10.40.2.11, qtype: PTR}
+#  - {name: app.corp.example, servers: [10.99.0.53]}       # override targets
+can_i_reach_dns_servers: []       # DNS server IPs to query directly
+can_i_reach_dns_use_system: true  # also resolve via the system resolver
+can_i_reach_dc_dns: true          # DCs join the direct-query server set
+
+# --- Domain controllers / AD ------------------------------------------------
+# Every DC (mark DR-site controllers with dr: true — the flag is shown
+# in the report) gets: the TCP port sweep below, a real DNS query
+# (via can_i_reach_dc_dns), and a real NTP exchange (via the time
+# checks' fallback). 53/udp and 123/udp are therefore tested by
+# protocol, not by blind probe.
+can_i_reach_domain_controllers: []
+#  - {name: dc1, address: 10.40.0.10}
+#  - {name: dr-dc1, address: 10.48.0.10, dr: true}
+can_i_reach_dc_tcp_ports: [53, 88, 135, 389, 445, 464, 636, 3268, 3269]
+# 53 dns, 88 kerberos, 135 rpc endpoint mapper, 389/636 ldap(s),
+# 445 smb, 464 kpasswd, 3268/3269 global catalog
+can_i_reach_ad_domain: ""         # when set: per-DC A query for the
+                                  # domain apex + the SRV check below
+can_i_reach_ad_srv_check: true    # _ldap._tcp.dc._msdcs.<ad_domain>
+                                  # via the system resolver
+
+# --- Time sources -----------------------------------------------------------
+# Kerberos dies beyond 5 minutes of skew, so reaching a time source is
+# part of "can I live here". Linux sends a real NTP client packet and
+# validates the reply; Windows uses w32tm /stripchart.
+can_i_reach_time_sources: []      # [{name: ..., address: ...}]; empty =
+                                  # fall back to the domain controllers
+can_i_reach_time_discover_windows: true   # Windows + empty sources:
+                                  # discover via `w32tm /query /source`
+
+# --- Proxy and egress -------------------------------------------------------
+# Each proxy is proven by fetching its test_urls THROUGH it (env vars
+# on Linux, proxy_url on Windows). forbidden_urls is the negative
+# check for proxy-only environments: these must NOT be reachable
+# directly — a successful direct fetch records `fail`.
+can_i_reach_proxies: []
+#  - {name: corp, url: "http://proxy.corp.example:3128",
+#     test_urls: [https://deb.debian.org, https://pypi.org]}
+#  - {name: dmz, url: "http://10.60.0.8:8080", username: svc-proxy,
+#     password: "{{ vault_proxy_pw }}", test_urls: [https://example.com]}
+can_i_reach_forbidden_urls: []
+#  - https://example.com           # must fail without the proxy
+
+# --- Package infrastructure: Linux -----------------------------------------
+# refresh mode actually refreshes the apt/dnf metadata cache — the only
+# test that exercises the real chain (mirrorlists, TLS, repo auth, the
+# package manager's own proxy config). It is the role's single side
+# effect and needs become. urls mode probes an explicit URL list
+# instead (point it at Release / repomd.xml files).
+can_i_reach_repo_enabled: true
+can_i_reach_repo_mode: refresh    # refresh | urls
+can_i_reach_repo_become: true     # refresh mode escalates for apt/dnf
+can_i_reach_repo_urls: []
+#  - {name: internal-deb, url: "https://mirror.corp.example/debian/dists/bookworm/Release"}
+#  - {name: internal-el, url: "https://mirror.corp.example/el9/repodata/repomd.xml"}
+
+# --- Package infrastructure: Windows ----------------------------------------
+# WSUS precedence: can_i_reach_wsus_url when set, else the WUServer
+# policy from the registry (only when UseWUServer=1), else the public
+# Windows Update endpoints below. Public WU roots return 403/404 by
+# design — the broad status lists assert TLS/HTTP *reachability*, not
+# content. wu_deep_check runs a real Windows Update Agent COM search:
+# the definitive test, but it can take minutes.
+can_i_reach_wu_enabled: true
+can_i_reach_wsus_url: ""          # e.g. "http://wsus.corp.example:8530"
+can_i_reach_wsus_status_codes: [200]
+can_i_reach_wu_public_endpoints:
+  - {name: sls, url: "https://sls.update.microsoft.com",
+     status_codes: [200, 301, 302, 400, 403, 404, 405]}
+  - {name: fe3, url: "https://fe3cr.delivery.mp.microsoft.com",
+     status_codes: [200, 301, 302, 400, 403, 404, 405]}
+  - {name: dl, url: "http://download.windowsupdate.com",
+     status_codes: [200, 301, 302, 400, 403, 404, 405]}
+  - {name: delivery, url: "https://dl.delivery.mp.microsoft.com",
+     status_codes: [200, 301, 302, 400, 403, 404, 405]}
+can_i_reach_wu_deep_check: false
+# winget.exe is a per-user MSIX app and usually is not resolvable in
+# WinRM/SYSTEM sessions (and absent on most Server SKUs), so the
+# default is static probes of the well-known sources; winget_dynamic
+# additionally parses `winget source list` when the binary exists and
+# records skipped when it does not.
+can_i_reach_winget_enabled: true
+can_i_reach_winget_sources:
+  - {name: winget, url: "https://cdn.winget.microsoft.com/cache",
+     status_codes: [200, 301, 302, 400, 403, 404, 405]}
+  - {name: msstore, url: "https://storeedgefd.dsx.mp.microsoft.com/v9.0",
+     status_codes: [200, 301, 302, 400, 403, 404, 405]}
+can_i_reach_winget_dynamic: false
+# SMB shares: 445 reachability + an access attempt per UNC.
+# Access-denied still proves the network path (likely credential
+# delegation / double-hop) and records `warn`, not `fail`.
+can_i_reach_smb_shares: []
+#  - {name: sccm, unc: '\\sccm01.corp.example\SMS_ABC'}
+#  - {name: installers, unc: '\\fs1.corp.example\deploy', test_access: false}

@@ -1,0 +1,152 @@
+---
+# Layer: dns — every query runs via the system resolver (opt-out) AND
+# directly against each configured DNS server; the domain controllers
+# join the direct-server set when can_i_reach_dc_dns is true, which is
+# how "DNS is accessible on the DCs and the DR DCs" is proven. Direct
+# queries speak raw DNS on the wire (dns_query module / Resolve-DnsName
+# -Server) — nothing needs to be installed on the target.
+
+- name: Compute the direct-query server set
+  ansible.builtin.set_fact:
+    _can_i_reach_dns_servers_all: >-
+      {{ (can_i_reach_dns_servers
+          + (can_i_reach_domain_controllers | map(attribute='address') | list
+             if can_i_reach_dc_dns else [])) | unique }}
+    _can_i_reach_dr_addrs: >-
+      {{ can_i_reach_domain_controllers | selectattr('dr', 'defined')
+         | selectattr('dr') | map(attribute='address') | list }}
+    _can_i_reach_dns_pairs: []
+
+- name: Build the direct-query matrix
+  vars:
+    _servers: "{{ _can_i_reach_q.servers | default(_can_i_reach_dns_servers_all) }}"
+  ansible.builtin.set_fact:
+    _can_i_reach_dns_pairs: >-
+      {{ _can_i_reach_dns_pairs + ([_can_i_reach_q] | product(_servers) | list) }}
+  loop: "{{ can_i_reach_dns_queries }}"
+  loop_control:
+    loop_var: _can_i_reach_q
+    label: "{{ _can_i_reach_q.name }}"
+
+# --- system resolver ---------------------------------------------------------
+- name: Resolve via the system resolver
+  when: not _can_i_reach_windows and can_i_reach_dns_use_system
+  mcowser_p.can_i_reach.dns_query:
+    name: "{{ _can_i_reach_q.name }}"
+    qtype: "{{ _can_i_reach_q.qtype | default('A') }}"
+    timeout: "{{ _can_i_reach_q.timeout | default(can_i_reach_timeout) }}"
+    tries: "{{ can_i_reach_tries }}"
+    expected_values: "{{ _can_i_reach_q.expected_values | default(omit) }}"
+  register: _can_i_reach_dnssys_reg
+  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  loop: "{{ can_i_reach_dns_queries }}"
+  loop_control:
+    loop_var: _can_i_reach_q
+    label: "{{ _can_i_reach_q.name }}"
+
+- name: Resolve via the system resolver (windows)
+  when: _can_i_reach_windows and can_i_reach_dns_use_system
+  ansible.windows.win_powershell:
+    script: "{{ lookup('ansible.builtin.file', 'dns_query.ps1') }}"
+    parameters:
+      Name: "{{ _can_i_reach_q.name }}"
+      QType: "{{ _can_i_reach_q.qtype | default('A') }}"
+      TimeoutSec: "{{ _can_i_reach_q.timeout | default(can_i_reach_timeout) | float }}"
+      Expected: "{{ _can_i_reach_q.expected_values | default([]) }}"
+  register: _can_i_reach_dnssys_reg_win
+  failed_when: >-
+    can_i_reach_fail_fast
+    and (_can_i_reach_dnssys_reg_win.result.status | default('fail')) == 'fail'
+  loop: "{{ can_i_reach_dns_queries }}"
+  loop_control:
+    loop_var: _can_i_reach_q
+    label: "{{ _can_i_reach_q.name }}"
+
+- name: Record system resolver results
+  vars:
+    _q: "{{ _can_i_reach_r._can_i_reach_q }}"
+    _suffix: "{{ '/' ~ _q.qtype if _q.qtype | default('A') != 'A' else '' }}"
+    _status: >-
+      {{ (_can_i_reach_r.result.status | default('fail')) if _can_i_reach_windows
+         else ('fail' if _can_i_reach_r.failed | default(false) else 'ok') }}
+    _detail: >-
+      {{ (_can_i_reach_r.result.detail | default('probe script error')) if _can_i_reach_windows
+         else (_can_i_reach_r.msg | default('answers: ' ~ (_can_i_reach_r.answers | default([]) | join(', ')))) }}
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
+           'id': 'dns:' ~ _q.name ~ _suffix,
+           'layer': 'dns',
+           'status': _status,
+           'detail': _detail,
+           'remediation': 'flush_dns' if _status == 'fail' else ''}]}) }}
+  loop: >-
+    {{ ((_can_i_reach_dnssys_reg_win if _can_i_reach_windows else _can_i_reach_dnssys_reg).results
+        | default([])) | rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    loop_var: _can_i_reach_r
+    label: "{{ _can_i_reach_r._can_i_reach_q.name }}"
+
+# --- direct queries against each server / DC ---------------------------------
+- name: Query each DNS server directly
+  when: not _can_i_reach_windows
+  mcowser_p.can_i_reach.dns_query:
+    name: "{{ _can_i_reach_p.0.name }}"
+    qtype: "{{ _can_i_reach_p.0.qtype | default('A') }}"
+    server: "{{ _can_i_reach_p.1 }}"
+    timeout: "{{ _can_i_reach_p.0.timeout | default(can_i_reach_timeout) }}"
+    tries: "{{ can_i_reach_tries }}"
+    expected_values: "{{ _can_i_reach_p.0.expected_values | default(omit) }}"
+  register: _can_i_reach_dnsdir_reg
+  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  loop: "{{ _can_i_reach_dns_pairs }}"
+  loop_control:
+    loop_var: _can_i_reach_p
+    label: "{{ _can_i_reach_p.0.name }}@{{ _can_i_reach_p.1 }}"
+
+- name: Query each DNS server directly (windows)
+  when: _can_i_reach_windows
+  ansible.windows.win_powershell:
+    script: "{{ lookup('ansible.builtin.file', 'dns_query.ps1') }}"
+    parameters:
+      Name: "{{ _can_i_reach_p.0.name }}"
+      QType: "{{ _can_i_reach_p.0.qtype | default('A') }}"
+      Server: "{{ _can_i_reach_p.1 }}"
+      TimeoutSec: "{{ _can_i_reach_p.0.timeout | default(can_i_reach_timeout) | float }}"
+      Expected: "{{ _can_i_reach_p.0.expected_values | default([]) }}"
+  register: _can_i_reach_dnsdir_reg_win
+  failed_when: >-
+    can_i_reach_fail_fast
+    and (_can_i_reach_dnsdir_reg_win.result.status | default('fail')) == 'fail'
+  loop: "{{ _can_i_reach_dns_pairs }}"
+  loop_control:
+    loop_var: _can_i_reach_p
+    label: "{{ _can_i_reach_p.0.name }}@{{ _can_i_reach_p.1 }}"
+
+- name: Record direct query results
+  vars:
+    _q: "{{ _can_i_reach_r._can_i_reach_p.0 }}"
+    _srv: "{{ _can_i_reach_r._can_i_reach_p.1 }}"
+    _suffix: "{{ '/' ~ _q.qtype if _q.qtype | default('A') != 'A' else '' }}"
+    _dr: "{{ ' [DR DC]' if _srv in _can_i_reach_dr_addrs else '' }}"
+    _status: >-
+      {{ (_can_i_reach_r.result.status | default('fail')) if _can_i_reach_windows
+         else ('fail' if _can_i_reach_r.failed | default(false) else 'ok') }}
+    _detail: >-
+      {{ ((_can_i_reach_r.result.detail | default('probe script error')) if _can_i_reach_windows
+          else (_can_i_reach_r.msg | default('answers: ' ~ (_can_i_reach_r.answers | default([]) | join(', ')))))
+         ~ _dr }}
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
+           'id': 'dns@' ~ _srv ~ ':' ~ _q.name ~ _suffix,
+           'layer': 'dns',
+           'status': _status,
+           'detail': _detail,
+           'remediation': ''}]}) }}
+  loop: >-
+    {{ ((_can_i_reach_dnsdir_reg_win if _can_i_reach_windows else _can_i_reach_dnsdir_reg).results
+        | default([])) | rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    loop_var: _can_i_reach_r
+    label: "{{ _can_i_reach_r._can_i_reach_p.0.name }}@{{ _can_i_reach_r._can_i_reach_p.1 }}"
