@@ -79,6 +79,21 @@ can_i_reach_ad_domain: ""         # when set: per-DC A query for the
 can_i_reach_ad_srv_check: true    # _ldap._tcp.dc._msdcs.<ad_domain>
                                   # via the system resolver
 
+# Agentless port sweep: prove the DC ports with nothing but what the OS
+# already ships. The sweep runs through `raw`, so the target needs no
+# Python, no collections and no packages — Linux uses bash's /dev/tcp
+# redirection under coreutils `timeout`, Windows uses .NET TcpClient
+# with an async connect. This is the only mode that works on a host too
+# bare for the rest of the role (no interpreter yet), and it is the only
+# one that distinguishes a REFUSED port (RST — something is listening on
+# the box, nothing on that port) from a FILTERED one (silence — a
+# firewall is dropping). The default mode uses wait_for/win_wait_for.
+#
+# Note: /dev/tcp is a bash feature. `sh` on Debian/Ubuntu is dash and
+# does not have it, so the probe invokes bash explicitly; a target with
+# no bash (or no timeout) records `skipped`, never a false pass.
+can_i_reach_dc_agentless: false
+
 # --- Time sources -----------------------------------------------------------
 # Kerberos dies beyond 5 minutes of skew, so reaching a time source is
 # part of "can I live here". Linux sends a real NTP client packet and

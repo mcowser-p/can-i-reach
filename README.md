@@ -25,12 +25,59 @@ including a genuine NTP client exchange.
 | endpoint | tcp / udp / icmp / http(s)+path, expected statuses | `wait_for`, `udp_probe`, `uri`, `ping` | `win_wait_for`, `UdpClient`, `win_uri`, `Test-Connection` |
 | dns | every query via the system resolver AND directly against each DNS server / DC / DR DC, optional expected answers, any qtype incl. SRV | `dns_query` (raw wire, TCP fallback) | `Resolve-DnsName [-Server -DnsOnly]` |
 | dc | AD port sweep per controller (53, 88, 135, 389, 445, 464, 636, 3268, 3269 by default), per-DC lookup of the domain apex, `_ldap._tcp.dc._msdcs` SRV | `wait_for` + `dns_query` | `win_wait_for` + `Resolve-DnsName` |
+| dc *(agentless)* | the same port sweep with **no interpreter, no collections, no packages** on the target — and it separates `timeout` (firewalled) from `refused` (closed) | `raw` + bash `/dev/tcp` under `timeout` | `raw` + `[Net.Sockets.TcpClient]` async connect |
 | time | a real NTP exchange with each source (falls back to the DC list) — Kerberos dies beyond 5 minutes of skew | `udp_probe payload=ntp` (reply validated) | `w32tm /stripchart` (+ source discovery) |
 | proxy | each proxy fetches its test URLs; `forbidden_urls` must NOT be reachable directly | `uri` + proxy env | `win_uri proxy_url` |
 | pkg | Linux: real apt/dnf metadata refresh (or explicit URL probes). Windows: WSUS from var → registry policy → public WU endpoints; winget sources; SMB shares (445 + access) | `apt`/`dnf`/`dnf5`, `uri` | `win_reg_stat`, `win_uri`, probe scripts |
 
 Every check lands in `can_i_reach_result.checks` as
 `{id, layer, status: ok|warn|fail|skipped, detail, remediation}`.
+
+## Agentless DC sweep
+
+Set `can_i_reach_dc_agentless: true` and the domain-controller port sweep
+runs through `ansible.builtin.raw` instead of `wait_for` — so it works on
+a host that has no Python yet, no collections installed, and nothing you
+are allowed to add.
+
+```yaml
+can_i_reach_dc_agentless: true
+can_i_reach_dc_tcp_ports: [53, 88, 135, 389, 445, 464, 636, 3268, 3269]
+can_i_reach_domain_controllers:
+  - {name: dc1, address: 10.40.0.10}
+  - {name: dr-dc1, address: 10.48.0.10, dr: true}
+```
+
+```text
+[FAIL] dc       dc:dc1        unreachable tcp: 3268 timeout, 3269 refused
+```
+
+That distinction is the reason to use this mode even where Python exists:
+**`timeout` means a firewall dropped the SYN, `refused` means the host is
+up and nothing is listening on that port.** `wait_for` reports both as one
+undifferentiated failure.
+
+Implementation notes worth knowing:
+
+- **Linux** uses bash's `/dev/tcp` redirection. That is a *bash* feature —
+  `sh` is dash on Debian/Ubuntu and does not have it — so the probe
+  invokes `bash` explicitly while the surrounding loop stays POSIX.
+- `/dev/tcp` has **no timeout of its own** and would hang for
+  `tcp_syn_retries` (~130 s) on a dropped SYN, so coreutils `timeout`
+  bounds every probe; its exit code 124 is what distinguishes filtered
+  from refused.
+- **Windows** uses `TcpClient.BeginConnect` with
+  `AsyncWaitHandle.WaitOne(ms)`, deliberately **not**
+  `Test-NetConnection` — that cmdlet accepts no timeout and blocks ~20 s
+  per dropped port, which turns a sweep of a firewalled DC into minutes.
+- A target with no `bash` (or no `timeout`) records **`skipped`** with a
+  hint, never a false pass.
+- Addresses and ports are interpolated into a shell command, so
+  `validate.yml` rejects any DC address outside the hostname/IP charset
+  and any port that is not an integer 1–65535.
+
+Only the DC port sweep is agentless. The DNS, time, proxy and package
+layers still use the collection's modules and need an interpreter.
 
 ## Quick start
 

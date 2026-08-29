@@ -26,6 +26,17 @@
     _dns_no_name: "{{ can_i_reach_dns_queries | selectattr('name', 'undefined') | list }}"
     _time_no_addr: "{{ can_i_reach_time_sources | selectattr('address', 'undefined') | list }}"
     _bad_fix: "{{ can_i_reach_remediate | reject('in', ['sync_time', 'flush_dns']) | list }}"
+    # The agentless sweep interpolates these into a shell/PowerShell
+    # command, so anything outside the hostname/IP charset is rejected
+    # rather than executed. Checked unconditionally: a DC address with a
+    # shell metacharacter is a broken config in every mode.
+    _dc_unsafe: >-
+      {{ can_i_reach_domain_controllers | selectattr('address', 'defined')
+         | map(attribute='address') | reject('match', '^[A-Za-z0-9._:-]+$') | list }}
+    _bad_ports: >-
+      {{ can_i_reach_dc_tcp_ports | reject('match', '^[0-9]+$') | list
+         + can_i_reach_dc_tcp_ports | select('match', '^[0-9]+$')
+         | map('int') | reject('in', range(1, 65536)) | list }}
   ansible.builtin.assert:
     that:
       - can_i_reach_fail_on in ['fail', 'warn', 'never']
@@ -41,6 +52,8 @@
       - _dns_no_name | length == 0
       - _time_no_addr | length == 0
       - _bad_fix | length == 0
+      - _dc_unsafe | length == 0
+      - _bad_ports | length == 0
     fail_msg: >-
       can-i-reach configuration is invalid.
       {{ 'fail_on must be fail|warn|never. ' if can_i_reach_fail_on not in ['fail', 'warn', 'never'] else '' }}
@@ -56,4 +69,6 @@
       {{ 'dns_queries need name: ' ~ (_dns_no_name | string) ~ '. ' if _dns_no_name | length > 0 else '' }}
       {{ 'time_sources need address: ' ~ (_time_no_addr | string) ~ '. ' if _time_no_addr | length > 0 else '' }}
       {{ 'unknown remediation id(s): ' ~ (_bad_fix | join(', ')) ~ ' (available: sync_time, flush_dns). ' if _bad_fix | length > 0 else '' }}
+      {{ 'domain controller address(es) outside the hostname/IP charset: ' ~ (_dc_unsafe | join(', ')) ~ '. ' if _dc_unsafe | length > 0 else '' }}
+      {{ 'dc_tcp_ports must be integers 1-65535, got: ' ~ (_bad_ports | join(', ')) ~ '. ' if _bad_ports | length > 0 else '' }}
     success_msg: configuration ok

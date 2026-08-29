@@ -8,7 +8,7 @@
 # by blind probes.
 
 - name: Probe domain controller TCP ports
-  when: not _can_i_reach_windows
+  when: not _can_i_reach_windows and not can_i_reach_dc_agentless
   ansible.builtin.wait_for:
     host: "{{ _can_i_reach_dcp.0.address }}"
     port: "{{ _can_i_reach_dcp.1 }}"
@@ -22,7 +22,7 @@
     label: "{{ _can_i_reach_dcp.0.address }}:{{ _can_i_reach_dcp.1 }}"
 
 - name: Probe domain controller TCP ports (windows)
-  when: _can_i_reach_windows
+  when: _can_i_reach_windows and not can_i_reach_dc_agentless
   ansible.windows.win_wait_for:
     host: "{{ _can_i_reach_dcp.0.address }}"
     port: "{{ _can_i_reach_dcp.1 }}"
@@ -36,6 +36,7 @@
     label: "{{ _can_i_reach_dcp.0.address }}:{{ _can_i_reach_dcp.1 }}"
 
 - name: Record domain controller port reachability
+  when: not can_i_reach_dc_agentless
   vars:
     _all: >-
       {{ ((_can_i_reach_dcports_reg_win if _can_i_reach_windows else _can_i_reach_dcports_reg).results
@@ -55,6 +56,108 @@
                       else ('unreachable tcp: ' ~ (_bad | join(', ')))) ~ _dr,
            'remediation': '' if _bad | length == 0
                           else 'open the listed ports (3268/3269 = Global Catalog, 464 = kpasswd)'}]}) }}
+  loop: "{{ can_i_reach_domain_controllers }}"
+  loop_control:
+    loop_var: _can_i_reach_dc
+    label: "{{ _can_i_reach_dc.name | default(_can_i_reach_dc.address) }}"
+
+# --- agentless port sweep -----------------------------------------------------
+# Same verdicts as the sweep above, but through `raw`: no Python, no
+# collections, no packages on the target. Each probe emits one sentinel
+# line, CIR|host|port|status, so login banners and MOTD noise (which raw
+# does not strip) are filtered out instead of being parsed as results.
+#
+# The outer loop is POSIX sh — bash is invoked explicitly for /dev/tcp
+# because `sh` is dash on Debian/Ubuntu and has no such feature. Bare
+# /dev/tcp has no timeout of its own and would hang on tcp_syn_retries
+# (~130s) against a dropped SYN, so coreutils `timeout` bounds it and
+# its exit code 124 is what separates FILTERED from REFUSED.
+
+- name: Build the agentless probe list
+  when:
+    - can_i_reach_dc_agentless
+    - can_i_reach_domain_controllers | length > 0
+  ansible.builtin.set_fact:
+    _can_i_reach_dc_pairs: >-
+      {{ can_i_reach_domain_controllers | map(attribute='address')
+         | product(can_i_reach_dc_tcp_ports) | map('join', ',') | join(' ') }}
+
+- name: Sweep domain controller TCP ports agentlessly (linux)
+  when:
+    - can_i_reach_dc_agentless
+    - not _can_i_reach_windows
+    - can_i_reach_domain_controllers | length > 0
+  ansible.builtin.raw: |
+    command -v bash >/dev/null 2>&1 || { echo "CIR|*|*|nobash"; exit 0; }
+    command -v timeout >/dev/null 2>&1 || { echo "CIR|*|*|notimeout"; exit 0; }
+    for hp in {{ _can_i_reach_dc_pairs }}; do
+      h=${hp%,*}; p=${hp#*,}
+      timeout {{ can_i_reach_timeout }} bash -c "exec 3<>/dev/tcp/$h/$p" 2>/dev/null
+      rc=$?
+      if [ "$rc" -eq 0 ]; then s=ok
+      elif [ "$rc" -eq 124 ]; then s=timeout
+      else s=refused; fi
+      echo "CIR|$h|$p|$s"
+    done
+  register: _can_i_reach_dcraw_reg
+  changed_when: false
+  check_mode: false
+
+# .NET TcpClient with an async connect, NOT Test-NetConnection: that
+# cmdlet takes no timeout and blocks ~20s per dropped port, which turns
+# a full sweep of a firewalled DC into minutes.
+- name: Sweep domain controller TCP ports agentlessly (windows)
+  when:
+    - can_i_reach_dc_agentless
+    - _can_i_reach_windows
+    - can_i_reach_domain_controllers | length > 0
+  ansible.builtin.raw: >-
+    $ErrorActionPreference='SilentlyContinue';
+    foreach($hp in '{{ _can_i_reach_dc_pairs }}'.Split(' ')){
+    $a=$hp.Split(',');$h=$a[0];$p=[int]$a[1];
+    $c=New-Object Net.Sockets.TcpClient;
+    try{$iar=$c.BeginConnect($h,$p,$null,$null);
+    if($iar.AsyncWaitHandle.WaitOne({{ (can_i_reach_timeout | float * 1000) | int }},$false))
+    {try{$c.EndConnect($iar);$s='ok'}catch{$s='refused'}}else{$s='timeout'}}
+    catch{$s='refused'}finally{$c.Close()};
+    Write-Output "CIR|$h|$p|$s"}
+  register: _can_i_reach_dcraw_reg_win
+  changed_when: false
+  check_mode: false
+
+- name: Record agentless domain controller port reachability
+  when: can_i_reach_dc_agentless
+  vars:
+    _raw: "{{ _can_i_reach_dcraw_reg_win if _can_i_reach_windows else _can_i_reach_dcraw_reg }}"
+    _rows: >-
+      {{ (_raw.stdout_lines | default([])) | map('trim')
+         | select('match', '^CIR[|]') | map('split', '|') | list }}
+    _blocked: "{{ _rows | selectattr(3, 'in', ['nobash', 'notimeout']) | map(attribute=3) | list }}"
+    _mine: "{{ _rows | selectattr(1, 'eq', _can_i_reach_dc.address) | list }}"
+    _bad: "{{ _mine | rejectattr(3, 'eq', 'ok') | list }}"
+    _bad_desc: >-
+      {{ _bad | map(attribute=2) | zip(_bad | map(attribute=3))
+         | map('join', ' ') | join(', ') }}
+    _dr: "{{ ' [DR]' if _can_i_reach_dc.dr | default(false) else '' }}"
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
+           'id': 'dc:' ~ (_can_i_reach_dc.name | default(_can_i_reach_dc.address)),
+           'layer': 'dc',
+           'status': 'skipped' if _blocked | length > 0
+                     else ('ok' if _bad | length == 0 else 'fail'),
+           'detail': (('no bash on the target - /dev/tcp unavailable'
+                       if 'nobash' in _blocked else 'no coreutils timeout on the target')
+                      if _blocked | length > 0
+                      else (('all ' ~ (can_i_reach_dc_tcp_ports | length) ~ ' tcp ports reachable')
+                            if _bad | length == 0
+                            else ('unreachable tcp: ' ~ _bad_desc))) ~ _dr,
+           'remediation': '' if _blocked | length == 0 and _bad | length == 0
+                          else ((('install bash' if 'nobash' in _blocked else 'install coreutils')
+                                 ~ ', or unset can_i_reach_dc_agentless to use wait_for instead')
+                                if _blocked | length > 0
+                                else 'open the listed ports (3268/3269 = Global Catalog, 464 = kpasswd);'
+                                     ~ ' timeout = dropped by a firewall, refused = host up but nothing listening')}]}) }}
   loop: "{{ can_i_reach_domain_controllers }}"
   loop_control:
     loop_var: _can_i_reach_dc

@@ -29,6 +29,14 @@ can_i_reach_dns_queries:
 can_i_reach_ad_domain: corp.example  # adds per-DC apex lookups + the
                                      # _ldap._tcp.dc._msdcs SRV check
 
+# Sweep the DC ports with nothing but what the OS already ships — bash's
+# /dev/tcp on Linux, .NET TcpClient on Windows, both driven through
+# `raw`. No Python, no collections, no packages on the target. Also the
+# only mode that tells a firewalled port (timeout) from a closed one
+# (refused). Add ports here and they are picked up on the next run.
+can_i_reach_dc_agentless: false
+can_i_reach_dc_tcp_ports: [53, 88, 135, 389, 445, 464, 636, 3268, 3269]
+
 # --- time (falls back to the DCs when empty) ---
 can_i_reach_time_sources: []
 
