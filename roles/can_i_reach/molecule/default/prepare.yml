@@ -24,10 +24,43 @@
         # /etc/hosts is a bind mount inside docker — atomic rename fails
         unsafe_writes: true
 
-    - name: Start dnsmasq on loopback
+    # dnsmasq is the system resolver from here on (forwarding the rest to
+    # Docker's embedded DNS) and serves the AD-style records discovery
+    # looks for. 127.0.0.2 plays the *discovered* server: the SRV target
+    # dc1.host.test and the NS target ns1.host.test both live there, so
+    # a check against 127.0.0.2 can only come from discovery.
+    # The upstream servers are whatever Docker gave the container: on the
+    # default bridge that is the host's resolvers, on a user-defined
+    # network the embedded 127.0.0.11 — read them before resolv.conf is
+    # replaced below.
+    - name: Read the container's original nameservers
+      ansible.builtin.slurp:
+        src: /etc/resolv.conf
+      register: _can_i_reach_resolv
+
+    - name: Start dnsmasq on loopback with the AD-style records
+      vars:
+        _upstreams: >-
+          {{ _can_i_reach_resolv.content | b64decode | regex_findall('(?m)^nameserver\s+(\S+)')
+             | reject('match', '^127\.0\.0\.[12]$') | list }}
       ansible.builtin.shell:
-        cmd: pgrep -x dnsmasq || dnsmasq --listen-address=127.0.0.1 --bind-interfaces
+        cmd: >-
+          pgrep -x dnsmasq || dnsmasq --bind-interfaces --no-resolv
+          {% for u in _upstreams %}--server={{ u }} {% endfor %}
+          --listen-address=127.0.0.1 --listen-address=127.0.0.2
+          --host-record=dc1.host.test,127.0.0.2
+          --host-record=ns1.host.test,127.0.0.2
+          --srv-host=_ldap._tcp.dc._msdcs.host.test,dc1.host.test,389,0,100
+          --dns-rr=host.test,2,036e733104686f7374047465737400
       changed_when: true
+
+    - name: Point the system resolver at dnsmasq
+      ansible.builtin.copy:
+        dest: /etc/resolv.conf
+        content: "nameserver 127.0.0.1\n"
+        mode: "0644"
+        # /etc/resolv.conf is a bind mount inside docker — atomic rename fails
+        unsafe_writes: true
 
     - name: Deploy the fake NTP server
       ansible.builtin.copy:

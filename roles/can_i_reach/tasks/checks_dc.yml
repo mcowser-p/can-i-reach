@@ -16,7 +16,7 @@
   register: _can_i_reach_dcports_reg
   check_mode: false
   ignore_errors: "{{ not can_i_reach_fail_fast }}"
-  loop: "{{ can_i_reach_domain_controllers | product(can_i_reach_dc_tcp_ports) | list }}"
+  loop: "{{ _can_i_reach_dcs | product(can_i_reach_dc_tcp_ports) | list }}"
   loop_control:
     loop_var: _can_i_reach_dcp
     label: "{{ _can_i_reach_dcp.0.address }}:{{ _can_i_reach_dcp.1 }}"
@@ -30,7 +30,7 @@
   register: _can_i_reach_dcports_reg_win
   check_mode: false
   ignore_errors: "{{ not can_i_reach_fail_fast }}"
-  loop: "{{ can_i_reach_domain_controllers | product(can_i_reach_dc_tcp_ports) | list }}"
+  loop: "{{ _can_i_reach_dcs | product(can_i_reach_dc_tcp_ports) | list }}"
   loop_control:
     loop_var: _can_i_reach_dcp
     label: "{{ _can_i_reach_dcp.0.address }}:{{ _can_i_reach_dcp.1 }}"
@@ -56,7 +56,7 @@
                       else ('unreachable tcp: ' ~ (_bad | join(', ')))) ~ _dr,
            'remediation': '' if _bad | length == 0
                           else 'open the listed ports (3268/3269 = Global Catalog, 464 = kpasswd)'}]}) }}
-  loop: "{{ can_i_reach_domain_controllers }}"
+  loop: "{{ _can_i_reach_dcs }}"
   loop_control:
     loop_var: _can_i_reach_dc
     label: "{{ _can_i_reach_dc.name | default(_can_i_reach_dc.address) }}"
@@ -76,17 +76,17 @@
 - name: Build the agentless probe list
   when:
     - can_i_reach_dc_agentless
-    - can_i_reach_domain_controllers | length > 0
+    - _can_i_reach_dcs | length > 0
   ansible.builtin.set_fact:
     _can_i_reach_dc_pairs: >-
-      {{ can_i_reach_domain_controllers | map(attribute='address')
+      {{ _can_i_reach_dcs | map(attribute='address')
          | product(can_i_reach_dc_tcp_ports) | map('join', ',') | join(' ') }}
 
 - name: Sweep domain controller TCP ports agentlessly (linux)
   when:
     - can_i_reach_dc_agentless
     - not _can_i_reach_windows
-    - can_i_reach_domain_controllers | length > 0
+    - _can_i_reach_dcs | length > 0
   ansible.builtin.raw: |
     command -v bash >/dev/null 2>&1 || { echo "CIR|*|*|nobash"; exit 0; }
     command -v timeout >/dev/null 2>&1 || { echo "CIR|*|*|notimeout"; exit 0; }
@@ -110,7 +110,7 @@
   when:
     - can_i_reach_dc_agentless
     - _can_i_reach_windows
-    - can_i_reach_domain_controllers | length > 0
+    - _can_i_reach_dcs | length > 0
   ansible.builtin.raw: >-
     $ErrorActionPreference='SilentlyContinue';
     foreach($hp in '{{ _can_i_reach_dc_pairs }}'.Split(' ')){
@@ -158,7 +158,7 @@
                                 if _blocked | length > 0
                                 else 'open the listed ports (3268/3269 = Global Catalog, 464 = kpasswd);'
                                      ~ ' timeout = dropped by a firewall, refused = host up but nothing listening')}]}) }}
-  loop: "{{ can_i_reach_domain_controllers }}"
+  loop: "{{ _can_i_reach_dcs }}"
   loop_control:
     loop_var: _can_i_reach_dc
     label: "{{ _can_i_reach_dc.name | default(_can_i_reach_dc.address) }}"
@@ -173,7 +173,7 @@
     tries: "{{ can_i_reach_tries }}"
   register: _can_i_reach_dcdns_reg
   ignore_errors: "{{ not can_i_reach_fail_fast }}"
-  loop: "{{ can_i_reach_domain_controllers }}"
+  loop: "{{ _can_i_reach_dcs }}"
   loop_control:
     loop_var: _can_i_reach_dc
     label: "{{ can_i_reach_ad_domain }}@{{ _can_i_reach_dc.address }}"
@@ -191,7 +191,7 @@
   failed_when: >-
     can_i_reach_fail_fast
     and (_can_i_reach_dcdns_reg_win.result.status | default('fail')) == 'fail'
-  loop: "{{ can_i_reach_domain_controllers }}"
+  loop: "{{ _can_i_reach_dcs }}"
   loop_control:
     loop_var: _can_i_reach_dc
     label: "{{ can_i_reach_ad_domain }}@{{ _can_i_reach_dc.address }}"
