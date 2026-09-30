@@ -1,0 +1,59 @@
+---
+name: Dependabot auto-merge
+
+# pull_request_target runs in the base-branch context, which is what gives
+# this workflow a writable token — a plain pull_request trigger hands
+# Dependabot PRs a read-only one and the approval fails. That is only safe
+# because nothing here checks out or executes the PR's code; it just talks
+# to the API. Do not add a checkout step.
+on: pull_request_target
+
+permissions:
+  contents: write
+  pull-requests: write
+  # Assignees are an issues-API concept even on a pull request, so the
+  # assign step needs this as well as pull-requests: write.
+  issues: write
+
+jobs:
+  automerge:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Majors are the ones that actually break things, so they stop here:
+      # no approval, no auto-merge, just assigned for a human to look at.
+      - name: Hold major bumps for manual review
+        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          gh pr edit "$PR_URL" --add-assignee "$OWNER"
+          gh pr comment "$PR_URL" --body \
+            "Major version bump — not auto-merged. Assigned to @$OWNER for review."
+
+      - name: Approve
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr review --approve "$PR_URL"
+
+      # --auto queues the merge behind the branch ruleset: it lands only once
+      # the required checks are green, and never if they fail.
+      - name: Enable auto-merge
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+        run: |
+          echo "Update type: $UPDATE_TYPE"
+          gh pr merge --auto --squash "$PR_URL"
