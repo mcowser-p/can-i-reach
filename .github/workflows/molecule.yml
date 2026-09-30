@@ -15,15 +15,15 @@
 name: Molecule
 
 on:
+  # Deliberately unfiltered on pull_request: `linux` is a required check
+  # in the main ruleset (.github/rulesets/main-protection.json), and a
+  # required check that never runs is not "passed", it is "Expected"
+  # forever — the PR blocks and Dependabot auto-merge stalls with no
+  # visible failure. A path filter here would do exactly that to any PR
+  # touching only docs or the release machinery. Pushes to main keep
+  # their filter, since nothing gates on those.
   pull_request:
     branches: [main]
-    paths:
-      - 'roles/**'
-      - 'plugins/**'
-      - 'tests/**'
-      - 'requirements.yml'
-      - 'requirements.txt'
-      - '.github/workflows/molecule.yml'
   push:
     branches: [main]
     paths:
