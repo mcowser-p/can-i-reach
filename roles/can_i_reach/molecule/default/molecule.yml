@@ -66,6 +66,10 @@ provisioner:
         can_i_reach_domain_controllers:
           - {name: fake-dc, address: 127.0.0.1}
         can_i_reach_dc_tcp_ports: [53]
+        # discovery: dc1 (SRV) and ns1 (NS) both resolve to 127.0.0.2
+        can_i_reach_ad_domain: host.test
+        can_i_reach_discover_domain_controllers: true
+        can_i_reach_discover_dns_servers: true
         can_i_reach_time_sources:
           - {name: fake-ntp, address: 127.0.0.1}
         can_i_reach_forbidden_urls:

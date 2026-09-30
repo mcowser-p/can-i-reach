@@ -28,6 +28,11 @@ can_i_reach_dns_queries:
   - {name: _ldap._tcp.corp.example, qtype: SRV}
 can_i_reach_ad_domain: corp.example  # adds per-DC apex lookups + the
                                      # _ldap._tcp.dc._msdcs SRV check
+# ...or let the domain name them: SRV targets join the DC list, NS
+# targets the DNS-server list (deduped against the explicit entries)
+can_i_reach_discover_domain_controllers: true
+can_i_reach_discover_dns_servers: true
+can_i_reach_discovery_servers: []    # empty = system resolver
 
 # Sweep the DC ports with nothing but what the OS already ships — bash's
 # /dev/tcp on Linux, .NET TcpClient on Windows, both driven through

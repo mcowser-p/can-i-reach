@@ -9,11 +9,11 @@
 - name: Compute the direct-query server set
   ansible.builtin.set_fact:
     _can_i_reach_dns_servers_all: >-
-      {{ (can_i_reach_dns_servers
-          + (can_i_reach_domain_controllers | map(attribute='address') | list
+      {{ (_can_i_reach_dns_servers
+          + (_can_i_reach_dcs | map(attribute='address') | list
              if can_i_reach_dc_dns else [])) | unique }}
     _can_i_reach_dr_addrs: >-
-      {{ can_i_reach_domain_controllers | selectattr('dr', 'defined')
+      {{ _can_i_reach_dcs | selectattr('dr', 'defined')
          | selectattr('dr') | map(attribute='address') | list }}
     _can_i_reach_dns_pairs: []
 

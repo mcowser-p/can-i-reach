@@ -15,7 +15,7 @@
         _c: "{{ can_i_reach_result.checks }}"
       ansible.builtin.assert:
         that:
-          - _c | length == 22
+          - _c | length == 29
           - (_c | selectattr('id', 'eq', 'tcp-blocked') | first).status == 'ok'
           - (_c | selectattr('id', 'eq', 'tcp-leak') | first).status == 'fail'
           - "'expected blocked' in (_c | selectattr('id', 'eq', 'tcp-leak') | first).detail"
@@ -38,6 +38,16 @@
           - (_c | selectattr('id', 'eq', 'dns:host.test') | first).status == 'ok'
           - (_c | selectattr('id', 'eq', 'dns@127.0.0.1:host.test') | first).status == 'ok'
           - (_c | selectattr('id', 'eq', 'dc:fake-dc') | first).status == 'ok'
+          # discovered from the domain's records: dc1 via SRV, ns1 via NS
+          - (_c | selectattr('id', 'eq', 'discover:dc') | first).status == 'ok'
+          - "'dc1=127.0.0.2' in (_c | selectattr('id', 'eq', 'discover:dc') | first).detail"
+          - (_c | selectattr('id', 'eq', 'discover:dns') | first).status == 'ok'
+          - "'ns1.host.test=127.0.0.2' in (_c | selectattr('id', 'eq', 'discover:dns') | first).detail"
+          - (_c | selectattr('id', 'eq', 'dc:dc1') | first).status == 'ok'
+          - (_c | selectattr('id', 'eq', 'dc-dns:dc1') | first).status == 'ok'
+          - (_c | selectattr('id', 'eq', 'dc-dns:fake-dc') | first).status == 'ok'
+          - (_c | selectattr('id', 'eq', 'dns@127.0.0.2:host.test') | first).status == 'ok'
+          - (_c | selectattr('id', 'eq', 'ad:srv_ldap') | first).status == 'ok'
           - (_c | selectattr('id', 'eq', 'ntp:fake-ntp') | first).status == 'ok'
           - (_c | selectattr('id', 'eq', 'noegress:10.255.255.1') | first).status == 'ok'
           - (_c | selectattr('id', 'eq', 'repo:refresh') | first).status == 'ok'

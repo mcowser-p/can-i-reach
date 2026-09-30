@@ -16,6 +16,9 @@
       remediations_applied: []
     _can_i_reach_windows: "{{ ansible_os_family == 'Windows' }}"
 
+- name: Discover domain controllers and DNS servers from the domain's records
+  ansible.builtin.include_tasks: discover.yml
+
 - name: Run the check suite
   ansible.builtin.include_tasks: "{{ _can_i_reach_suite_file }}"
   loop:

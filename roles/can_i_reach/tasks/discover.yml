@@ -1,0 +1,202 @@
+---
+# Discovery: let the domain's own DNS records name the domain controllers
+# (_ldap._tcp.dc._msdcs.<domain> SRV) and the DNS servers (NS records of
+# <domain>). Discovered entries are appended to the explicit lists —
+# deduplicated by address, tagged discovered: true — and from here on
+# every layer uses the merged lists (_can_i_reach_dcs,
+# _can_i_reach_dns_servers). Discovery itself is recorded as checks in
+# the report, so an empty SRV answer is a visible finding, not silence.
+
+- name: Start from the explicit lists
+  ansible.builtin.set_fact:
+    _can_i_reach_dcs: "{{ can_i_reach_domain_controllers }}"
+    _can_i_reach_dns_servers: "{{ can_i_reach_dns_servers }}"
+    _can_i_reach_domain: >-
+      {{ can_i_reach_ad_domain if can_i_reach_ad_domain | length > 0
+         else (ansible_domain | default('')) }}
+    _can_i_reach_discovery_on: >-
+      {{ can_i_reach_discover_domain_controllers or can_i_reach_discover_dns_servers }}
+    # '' = the system resolver (the Windows script and the module both
+    # treat an empty server as "system view")
+    _can_i_reach_disc_servers: >-
+      {{ can_i_reach_discovery_servers if can_i_reach_discovery_servers | length > 0 else [''] }}
+
+- name: Discovery needs a domain
+  when: _can_i_reach_discovery_on
+  ansible.builtin.assert:
+    that: _can_i_reach_domain | length > 0
+    fail_msg: >-
+      can_i_reach_discover_* needs a domain: set can_i_reach_ad_domain
+      (the host reports no DNS domain of its own to fall back to)
+    success_msg: "discovering from {{ _can_i_reach_domain }}"
+
+# --- what to ask: SRV for the DCs, NS for the DNS servers ---------------------
+- name: Build the discovery queries
+  ansible.builtin.set_fact:
+    _can_i_reach_disc_queries: >-
+      {{ ([{'kind': 'dc', 'name': '_ldap._tcp.dc._msdcs.' ~ _can_i_reach_domain, 'qtype': 'SRV'}]
+          if can_i_reach_discover_domain_controllers else [])
+         + ([{'kind': 'dns', 'name': _can_i_reach_domain, 'qtype': 'NS'}]
+            if can_i_reach_discover_dns_servers else []) }}
+
+- name: Query the discovery records
+  when: _can_i_reach_discovery_on and not _can_i_reach_windows
+  mcowser_p.can_i_reach.dns_query:
+    name: "{{ _can_i_reach_dq.0.name }}"
+    qtype: "{{ _can_i_reach_dq.0.qtype }}"
+    server: "{{ _can_i_reach_dq.1 if _can_i_reach_dq.1 | length > 0 else omit }}"
+    timeout: "{{ can_i_reach_timeout }}"
+    tries: "{{ can_i_reach_tries }}"
+  register: _can_i_reach_disc_reg
+  failed_when: false
+  loop: "{{ _can_i_reach_disc_queries | product(_can_i_reach_disc_servers) | list }}"
+  loop_control:
+    loop_var: _can_i_reach_dq
+    label: "{{ _can_i_reach_dq.0.name }}/{{ _can_i_reach_dq.0.qtype }} @{{ _can_i_reach_dq.1 | default('system', true) }}"
+
+- name: Query the discovery records (windows)
+  when: _can_i_reach_discovery_on and _can_i_reach_windows
+  ansible.windows.win_powershell:
+    script: "{{ lookup('ansible.builtin.file', 'dns_query.ps1') }}"
+    parameters:
+      Name: "{{ _can_i_reach_dq.0.name }}"
+      QType: "{{ _can_i_reach_dq.0.qtype }}"
+      Server: "{{ _can_i_reach_dq.1 }}"
+      TimeoutSec: "{{ can_i_reach_timeout | float }}"
+      Expected: []
+  register: _can_i_reach_disc_reg_win
+  failed_when: false
+  loop: "{{ _can_i_reach_disc_queries | product(_can_i_reach_disc_servers) | list }}"
+  loop_control:
+    loop_var: _can_i_reach_dq
+    label: "{{ _can_i_reach_dq.0.name }}/{{ _can_i_reach_dq.0.qtype }} @{{ _can_i_reach_dq.1 | default('system', true) }}"
+
+# Answers: SRV = "prio weight port target", NS = "target". Keep the
+# target host names, lower-cased, without the trailing dot.
+- name: Collect the discovered names
+  vars:
+    _results: >-
+      {{ ((_can_i_reach_disc_reg_win if _can_i_reach_windows else _can_i_reach_disc_reg).results
+          | default([])) | rejectattr('skipped', 'defined') | list }}
+    _answers_of: >-
+      {{ _results | map(attribute=('result.answers' if _can_i_reach_windows else 'answers'), default=[]) | list }}
+    _kinds: "{{ _results | map(attribute='_can_i_reach_dq.0.kind') | list }}"
+  ansible.builtin.set_fact:
+    _can_i_reach_disc_names: >-
+      {{ dict(['dc', 'dns'] | zip(
+           [_answers_of | zip(_kinds) | selectattr('1', 'eq', 'dc') | map(attribute='0') | flatten
+              | map('regex_replace', '^\d+\s+\d+\s+\d+\s+', '') | map('regex_replace', '\.$', '')
+              | map('lower') | unique | list,
+            _answers_of | zip(_kinds) | selectattr('1', 'eq', 'dns') | map(attribute='0') | flatten
+              | map('regex_replace', '\.$', '') | map('lower') | unique | list])) }}
+
+# --- resolve every discovered name to an address ------------------------------
+- name: Resolve the discovered names
+  when: not _can_i_reach_windows
+  mcowser_p.can_i_reach.dns_query:
+    name: "{{ _can_i_reach_dn }}"
+    qtype: A
+    server: "{{ _can_i_reach_disc_servers[0] if _can_i_reach_disc_servers[0] | length > 0 else omit }}"
+    timeout: "{{ can_i_reach_timeout }}"
+    tries: "{{ can_i_reach_tries }}"
+  register: _can_i_reach_disc_a_reg
+  failed_when: false
+  loop: "{{ (_can_i_reach_disc_names.dc + _can_i_reach_disc_names.dns) | unique }}"
+  loop_control:
+    loop_var: _can_i_reach_dn
+
+- name: Resolve the discovered names (windows)
+  when: _can_i_reach_windows
+  ansible.windows.win_powershell:
+    script: "{{ lookup('ansible.builtin.file', 'dns_query.ps1') }}"
+    parameters:
+      Name: "{{ _can_i_reach_dn }}"
+      QType: A
+      Server: "{{ _can_i_reach_disc_servers[0] }}"
+      TimeoutSec: "{{ can_i_reach_timeout | float }}"
+      Expected: []
+  register: _can_i_reach_disc_a_reg_win
+  failed_when: false
+  loop: "{{ (_can_i_reach_disc_names.dc + _can_i_reach_disc_names.dns) | unique }}"
+  loop_control:
+    loop_var: _can_i_reach_dn
+
+- name: Map discovered names to addresses
+  vars:
+    _results: >-
+      {{ ((_can_i_reach_disc_a_reg_win if _can_i_reach_windows else _can_i_reach_disc_a_reg).results
+          | default([])) | rejectattr('skipped', 'defined') | list }}
+  ansible.builtin.set_fact:
+    _can_i_reach_disc_addr: >-
+      {{ dict(_results | map(attribute='_can_i_reach_dn') | zip(
+           _results | map(attribute=('result.answers.0' if _can_i_reach_windows else 'answers.0'), default='')
+             | list)) }}
+
+# --- merge into the working lists ----------------------------------------------
+- name: Append discovered domain controllers
+  when:
+    - can_i_reach_discover_domain_controllers
+    - _can_i_reach_disc_addr[_can_i_reach_dn] | default('') | length > 0
+    - _can_i_reach_disc_addr[_can_i_reach_dn] not in (_can_i_reach_dcs | map(attribute='address') | list)
+  ansible.builtin.set_fact:
+    _can_i_reach_dcs: >-
+      {{ _can_i_reach_dcs + [{'name': _can_i_reach_dn.split('.')[0],
+                              'address': _can_i_reach_disc_addr[_can_i_reach_dn],
+                              'fqdn': _can_i_reach_dn,
+                              'discovered': true}] }}
+  loop: "{{ _can_i_reach_disc_names.dc }}"
+  loop_control:
+    loop_var: _can_i_reach_dn
+
+- name: Append discovered DNS servers
+  when: can_i_reach_discover_dns_servers
+  ansible.builtin.set_fact:
+    _can_i_reach_dns_servers: >-
+      {{ (_can_i_reach_dns_servers
+          + (_can_i_reach_disc_names.dns | map('extract', _can_i_reach_disc_addr) | select | list))
+         | unique }}
+
+# --- record discovery as checks --------------------------------------------------
+- name: Record domain controller discovery
+  when: can_i_reach_discover_domain_controllers
+  vars:
+    _found: "{{ _can_i_reach_dcs | selectattr('discovered', 'defined') | list }}"
+    _unresolved: >-
+      {{ _can_i_reach_disc_names.dc | reject('in', _can_i_reach_disc_addr | dict2items
+         | selectattr('value', 'ne', '') | map(attribute='key') | list) | list }}
+    _dupes: "{{ _can_i_reach_disc_names.dc | length - _found | length - _unresolved | length }}"
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
+           'id': 'discover:dc',
+           'layer': 'dc',
+           'status': 'ok' if (_can_i_reach_disc_names.dc | length > 0 and _unresolved | length == 0)
+                     else ('warn' if _can_i_reach_disc_names.dc | length > 0 else 'fail'),
+           'detail': ('no _ldap._tcp.dc._msdcs.' ~ _can_i_reach_domain ~ ' SRV records'
+                      if _can_i_reach_disc_names.dc | length == 0
+                      else (_can_i_reach_disc_names.dc | length ~ ' via SRV: '
+                            ~ (_found | map(attribute='name') | zip(_found | map(attribute='address'))
+                               | map('join', '=') | join(', '))
+                            ~ ((' (' ~ _dupes ~ ' already listed)') if _dupes | int > 0 else '')
+                            ~ ((' unresolved: ' ~ (_unresolved | join(', '))) if _unresolved | length > 0 else ''))),
+           'remediation': ''}]}) }}
+
+- name: Record DNS server discovery
+  when: can_i_reach_discover_dns_servers
+  vars:
+    _addrs: "{{ _can_i_reach_disc_names.dns | map('extract', _can_i_reach_disc_addr) | select | list }}"
+    _unresolved: "{{ _can_i_reach_disc_names.dns | reject('in', _can_i_reach_disc_addr | dict2items | selectattr('value', 'ne', '') | map(attribute='key') | list) | list }}"
+  ansible.builtin.set_fact:
+    can_i_reach_result: >-
+      {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
+           'id': 'discover:dns',
+           'layer': 'dns',
+           'status': 'ok' if (_can_i_reach_disc_names.dns | length > 0 and _unresolved | length == 0)
+                     else ('warn' if _can_i_reach_disc_names.dns | length > 0 else 'fail'),
+           'detail': ('no NS records for ' ~ _can_i_reach_domain)
+                     if _can_i_reach_disc_names.dns | length == 0
+                     else (_can_i_reach_disc_names.dns | length ~ ' via NS: '
+                           ~ (_can_i_reach_disc_names.dns | zip(_can_i_reach_disc_names.dns | map('extract', _can_i_reach_disc_addr))
+                              | map('join', '=') | join(', '))
+                           ~ ((' unresolved: ' ~ (_unresolved | join(', '))) if _unresolved | length > 0 else '')),
+           'remediation': ''}]}) }}

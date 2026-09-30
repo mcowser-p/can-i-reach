@@ -24,6 +24,7 @@ including a genuine NTP client exchange.
 |---|---|---|---|
 | endpoint | tcp / udp / icmp / http(s)+path, expected statuses; `expect: unreachable` proves a target is *blocked* | `wait_for`, `udp_probe`, `uri`, `ping` | `win_wait_for`, `UdpClient`, `win_uri`, `Test-Connection` |
 | dns | every query via the system resolver AND directly against each DNS server / DC / DR DC, optional expected answers, any qtype incl. SRV | `dns_query` (raw wire, TCP fallback) | `Resolve-DnsName [-Server -DnsOnly]` |
+| discovery | the domain's own records name the servers: `_ldap._tcp.dc._msdcs` SRV → domain controllers, NS → DNS servers; merged with the explicit lists | `dns_query` | `Resolve-DnsName` |
 | dc | AD port sweep per controller (53, 88, 135, 389, 445, 464, 636, 3268, 3269 by default), per-DC lookup of the domain apex, `_ldap._tcp.dc._msdcs` SRV | `wait_for` + `dns_query` | `win_wait_for` + `Resolve-DnsName` |
 | dc *(agentless)* | the same port sweep with **no interpreter, no collections, no packages** on the target — and it separates `timeout` (firewalled) from `refused` (closed) | `raw` + bash `/dev/tcp` under `timeout` | `raw` + `[Net.Sockets.TcpClient]` async connect |
 | time | a real NTP exchange with each source (falls back to the DC list) — Kerberos dies beyond 5 minutes of skew | `udp_probe payload=ntp` (reply validated) | `w32tm /stripchart` (+ source discovery) |
@@ -32,6 +33,37 @@ including a genuine NTP client exchange.
 
 Every check lands in `can_i_reach_result.checks` as
 `{id, layer, status: ok|warn|fail|skipped, detail, remediation}`.
+
+## Discovery: let the domain name its servers
+
+Listing every controller by hand goes stale; the domain already
+publishes them. With a domain (`can_i_reach_ad_domain`, else the host's
+own DNS domain):
+
+```yaml
+can_i_reach_ad_domain: corp.example
+can_i_reach_discover_domain_controllers: true   # _ldap._tcp.dc._msdcs.corp.example SRV
+can_i_reach_discover_dns_servers: true          # NS records of corp.example
+can_i_reach_discovery_servers: []               # ask the system resolver (or list servers)
+can_i_reach_domain_controllers:                 # explicit entries still work — and combine
+  - {name: dr-dc1, address: 10.48.0.10, dr: true}
+```
+
+Every SRV target is resolved and appended to the domain-controller list
+(deduplicated by address, tagged `discovered: true`), every NS target to
+the DNS-server list — and from there they get exactly what an explicit
+entry gets: the port sweep, the per-DC apex lookup, the direct DNS
+queries, the NTP fallback. Discovery is itself in the report:
+
+```text
+[OK  ] dc       discover:dc        3 via SRV: dc1=10.40.0.10, dc2=10.40.0.11 (1 already listed)
+[OK  ] dns      discover:dns       2 via NS: dc1.corp.example=10.40.0.10, dc2.corp.example=10.40.0.11
+[OK  ] dc       dc:dc2             all 9 tcp ports reachable
+[OK  ] dns      dns@10.40.0.11:app.corp.example  answers: 10.40.2.20
+```
+
+No SRV/NS answer at all is a `fail` (the domain is not reachable, or the
+resolver cannot see it); a target that does not resolve is a `warn`.
 
 ## Agentless DC sweep
 

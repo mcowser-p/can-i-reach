@@ -9,7 +9,7 @@
   ansible.builtin.set_fact:
     _can_i_reach_time_srcs: >-
       {{ can_i_reach_time_sources if can_i_reach_time_sources | length > 0
-         else can_i_reach_domain_controllers }}
+         else _can_i_reach_dcs }}
 
 - name: Exchange NTP with each time source
   when: not _can_i_reach_windows

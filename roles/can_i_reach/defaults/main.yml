@@ -92,6 +92,20 @@ can_i_reach_ad_domain: ""         # when set: per-DC A query for the
 can_i_reach_ad_srv_check: true    # _ldap._tcp.dc._msdcs.<ad_domain>
                                   # via the system resolver
 
+# --- Discovery: let the domain's records name the servers --------------------
+# Instead of (or as well as) listing them. Discovered entries are appended
+# to the explicit lists above — deduplicated by address, tagged
+# discovered: true — and get exactly the same checks: the DC port sweep,
+# the per-DC apex lookup, the direct DNS queries, the NTP fallback.
+# Both need a domain: can_i_reach_ad_domain, else the host's own DNS
+# domain (ansible_domain). Discovery is itself recorded in the report
+# (discover:dc, discover:dns): no SRV/NS answer is a `fail`, an
+# unresolvable target a `warn`.
+can_i_reach_discover_domain_controllers: false   # _ldap._tcp.dc._msdcs.<domain> SRV
+can_i_reach_discover_dns_servers: false          # NS records of <domain>
+can_i_reach_discovery_servers: []  # where to ask for the SRV/NS/A discovery
+                                   # records; empty = the system resolver
+
 # Agentless port sweep: prove the DC ports with nothing but what the OS
 # already ships. The sweep runs through `raw`, so the target needs no
 # Python, no collections and no packages — Linux uses bash's /dev/tcp
