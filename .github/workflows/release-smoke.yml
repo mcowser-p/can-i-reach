@@ -1,0 +1,37 @@
+---
+name: Release smoke
+
+# Dependabot bumps semantic-release and its plugins; this proves the
+# toolchain still loads and renders release notes BEFORE the bump merges —
+# with the real .releaserc.js, in dry-run, on the PR branch. See
+# .github/scripts/release-smoke.mjs. Required by the main ruleset.
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # the PR branch itself, not the detached merge commit: semantic-release
+          # verifies the branch exists on the remote and that HEAD is up to date
+          ref: ${{ github.head_ref || github.ref_name }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Install the release toolchain (pinned in package.json)
+        run: npm install
+
+      - name: Dry-run semantic-release with the real config
+        run: node .github/scripts/release-smoke.mjs
+        env:
+          SMOKE_BRANCH: ${{ github.head_ref || github.ref_name }}

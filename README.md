@@ -262,7 +262,12 @@ a `windows-latest` runner over both WinRM and SSH — gated behind the
 
 Branch protection for `main` is versioned in
 [`.github/rulesets/`](.github/rulesets) as GitHub ruleset JSON (no
-deletion, no force-push, `lint` and `linux` checks required). GitHub
+deletion, no force-push; `lint`, `linux`, `windows` and `release-smoke`
+checks required). `windows` is label-gated and skips — which counts as
+passing — unless the PR carries `test-windows`; Dependabot's pip bumps
+carry it, so an ansible-core bump must pass on Windows too.
+`release-smoke` dry-runs semantic-release with the real config on every
+PR so a bump of the release toolchain cannot merge broken. GitHub
 does not apply it from the file by itself — run
 `.github/rulesets/apply.sh` as a repo admin after cloning to a new org
 or editing the JSON; it creates or updates the ruleset by name.
