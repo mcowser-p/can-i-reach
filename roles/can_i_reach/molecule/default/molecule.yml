@@ -52,6 +52,15 @@ provisioner:
           - {name: tcp-closed, host: 127.0.0.1, port: 9, timeout: 2}
           - {name: udp-echo, host: 127.0.0.1, port: 19999, protocol: udp, expect_reply: true}
           - {name: ping-loop, host: 127.0.0.1, protocol: icmp}
+          # expect: unreachable — closed/unroutable targets pass, open ones fail
+          - {name: tcp-blocked, host: 127.0.0.1, port: 9, timeout: 2, expect: unreachable}
+          - {name: tcp-leak, host: 127.0.0.1, port: 8080, expect: unreachable}
+          - {name: icmp-blocked, host: 10.255.255.1, timeout: 2, protocol: icmp, expect: unreachable}
+          - {name: http-blocked, host: 10.255.255.1, port: 443, path: /, timeout: 2, expect: unreachable}
+          - {name: http-leak, host: 127.0.0.1, port: 8080, path: /, expect: unreachable}
+          # a closed loopback UDP port answers ICMP unreachable: host reached → warn
+          - {name: udp-closed-not-blocked, host: 127.0.0.1, port: 50123, protocol: udp, timeout: 2, expect: unreachable}
+          - {name: udp-leak, host: 127.0.0.1, port: 19999, protocol: udp, expect: unreachable}
         can_i_reach_dns_queries:
           - {name: host.test, expected_values: [127.0.0.1]}
         can_i_reach_domain_controllers:

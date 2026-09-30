@@ -7,6 +7,9 @@
     _bad_proto: >-
       {{ can_i_reach_endpoints | map(attribute='protocol', default='tcp')
          | reject('in', ['tcp', 'udp', 'icmp']) | list }}
+    _bad_expect: >-
+      {{ can_i_reach_endpoints | map(attribute='expect', default='reachable')
+         | reject('in', ['reachable', 'unreachable']) | list }}
     _no_port: >-
       {{ can_i_reach_endpoints | selectattr('port', 'undefined')
          | rejectattr('protocol', 'defined') | list
@@ -59,6 +62,7 @@
       - can_i_reach_repo_mode in ['refresh', 'urls']
       - _no_host | length == 0
       - _bad_proto | length == 0
+      - _bad_expect | length == 0
       - _no_port | length == 0
       - _path_clash | length == 0
       - _proxy_no_url | length == 0
@@ -77,6 +81,7 @@
       {{ 'repo_mode must be refresh|urls. ' if can_i_reach_repo_mode not in ['refresh', 'urls'] else '' }}
       {{ 'endpoints without host: ' ~ (_no_host | string) ~ '. ' if _no_host | length > 0 else '' }}
       {{ 'unknown endpoint protocol(s): ' ~ (_bad_proto | join(', ')) ~ '. ' if _bad_proto | length > 0 else '' }}
+      {{ 'endpoint expect must be reachable|unreachable, got: ' ~ (_bad_expect | join(', ')) ~ '. ' if _bad_expect | length > 0 else '' }}
       {{ 'non-icmp endpoints need a port: ' ~ (_no_port | string) ~ '. ' if _no_port | length > 0 else '' }}
       {{ 'path only applies to tcp/http endpoints: ' ~ (_path_clash | string) ~ '. ' if _path_clash | length > 0 else '' }}
       {{ 'proxies need url: ' ~ (_proxy_no_url | string) ~ '. ' if _proxy_no_url | length > 0 else '' }}

@@ -15,7 +15,15 @@
         _c: "{{ can_i_reach_result.checks }}"
       ansible.builtin.assert:
         that:
-          - _c | length == 15
+          - _c | length == 22
+          - (_c | selectattr('id', 'eq', 'tcp-blocked') | first).status == 'ok'
+          - (_c | selectattr('id', 'eq', 'tcp-leak') | first).status == 'fail'
+          - "'expected blocked' in (_c | selectattr('id', 'eq', 'tcp-leak') | first).detail"
+          - (_c | selectattr('id', 'eq', 'icmp-blocked') | first).status == 'ok'
+          - (_c | selectattr('id', 'eq', 'http-blocked') | first).status == 'ok'
+          - (_c | selectattr('id', 'eq', 'http-leak') | first).status == 'fail'
+          - (_c | selectattr('id', 'eq', 'udp-closed-not-blocked') | first).status == 'warn'
+          - (_c | selectattr('id', 'eq', 'udp-leak') | first).status == 'fail'
           - (_c | selectattr('id', 'eq', 'http-ok') | first).status == 'ok'
           - (_c | selectattr('id', 'eq', 'http-via-proxy') | first).status == 'ok'
           - "'via proxy corp' in (_c | selectattr('id', 'eq', 'http-via-proxy') | first).detail"
@@ -33,8 +41,8 @@
           - (_c | selectattr('id', 'eq', 'ntp:fake-ntp') | first).status == 'ok'
           - (_c | selectattr('id', 'eq', 'noegress:10.255.255.1') | first).status == 'ok'
           - (_c | selectattr('id', 'eq', 'repo:refresh') | first).status == 'ok'
-          - _c | selectattr('status', 'eq', 'fail') | list | length == 2
-          - _c | selectattr('status', 'eq', 'warn') | list | length == 0
+          - _c | selectattr('status', 'eq', 'fail') | list | length == 5
+          - _c | selectattr('status', 'eq', 'warn') | list | length == 1
         fail_msg: "unexpected records: {{ _c }}"
 
     - name: Stat the report file
