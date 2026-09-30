@@ -32,7 +32,10 @@
     timeout: "{{ _can_i_reach_ep.timeout | default(can_i_reach_timeout) }}"
   register: _can_i_reach_tcp_reg
   check_mode: false
-  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  # an entry expected to be blocked is allowed to fail its probe
+  ignore_errors: >-
+    {{ not can_i_reach_fail_fast
+       or (_can_i_reach_ep.expect | default('reachable')) == 'unreachable' }}
   loop: "{{ _can_i_reach_ep_plain }}"
   loop_control:
     loop_var: _can_i_reach_ep
@@ -46,7 +49,10 @@
     timeout: "{{ _can_i_reach_ep.timeout | default(can_i_reach_timeout) }}"
   register: _can_i_reach_tcp_reg_win
   check_mode: false
-  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  # an entry expected to be blocked is allowed to fail its probe
+  ignore_errors: >-
+    {{ not can_i_reach_fail_fast
+       or (_can_i_reach_ep.expect | default('reachable')) == 'unreachable' }}
   loop: "{{ _can_i_reach_ep_plain }}"
   loop_control:
     loop_var: _can_i_reach_ep
@@ -55,15 +61,23 @@
 - name: Record TCP endpoint results
   vars:
     _ep: "{{ _can_i_reach_r._can_i_reach_ep }}"
-    _ok: "{{ not (_can_i_reach_r.failed | default(false)) }}"
+    _reached: "{{ not (_can_i_reach_r.failed | default(false)) }}"
+    _want_down: "{{ (_ep.expect | default('reachable')) == 'unreachable' }}"
+    _ok: "{{ _reached != _want_down }}"
   ansible.builtin.set_fact:
     can_i_reach_result: >-
       {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
            'id': _ep.name | default('tcp:' ~ _ep.host ~ ':' ~ _ep.port),
            'layer': 'endpoint',
            'status': 'ok' if _ok else 'fail',
-           'detail': ('connected in ' ~ (_can_i_reach_r.elapsed | default(0)) ~ 's') if _ok
-                     else (_can_i_reach_r.msg | default('unreachable')),
+           'detail': (('connected in ' ~ (_can_i_reach_r.elapsed | default(0)) ~ 's')
+                      if not _want_down
+                      else ('REACHABLE - expected blocked (connected in '
+                            ~ (_can_i_reach_r.elapsed | default(0)) ~ 's)'))
+                     if _reached
+                     else ((_can_i_reach_r.msg | default('unreachable'))
+                           if not _want_down
+                           else ('correctly blocked (' ~ (_can_i_reach_r.msg | default('no connect')) ~ ')')),
            'remediation': ''}]}) }}
   loop: >-
     {{ ((_can_i_reach_tcp_reg_win if _can_i_reach_windows else _can_i_reach_tcp_reg).results
@@ -82,7 +96,10 @@
     tries: "{{ can_i_reach_tries }}"
     expect_reply: "{{ _can_i_reach_ep.expect_reply | default(false) }}"
   register: _can_i_reach_udp_reg
-  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  # an entry expected to be blocked is allowed to fail its probe
+  ignore_errors: >-
+    {{ not can_i_reach_fail_fast
+       or (_can_i_reach_ep.expect | default('reachable')) == 'unreachable' }}
   loop: "{{ _can_i_reach_ep_udp }}"
   loop_control:
     loop_var: _can_i_reach_ep
@@ -102,6 +119,7 @@
   register: _can_i_reach_udp_reg_win
   failed_when: >-
     can_i_reach_fail_fast
+    and (_can_i_reach_ep.expect | default('reachable')) != 'unreachable'
     and (_can_i_reach_udp_reg_win.result.status | default('fail')) == 'fail'
   loop: "{{ _can_i_reach_ep_udp }}"
   loop_control:
@@ -111,13 +129,29 @@
 - name: Record UDP endpoint results
   vars:
     _ep: "{{ _can_i_reach_r._can_i_reach_ep }}"
-    _status: >-
+    _want_down: "{{ (_ep.expect | default('reachable')) == 'unreachable' }}"
+    _status_up: >-
       {{ (_can_i_reach_r.result.status | default('fail')) if _can_i_reach_windows
          else ('fail' if _can_i_reach_r.failed | default(false)
                else ('ok' if _can_i_reach_r.state | default('') == 'responded' else 'warn')) }}
-    _detail: >-
+    # inverted reading: a reply is the failure, silence is the pass, and
+    # ICMP port-unreachable (or any other probe failure) proves the host
+    # was reached even though the port is closed - a warn, not a pass
+    _state: >-
+      {{ (_can_i_reach_r.result.status | default('fail')) if _can_i_reach_windows
+         else (_can_i_reach_r.state | default('error')) }}
+    _status_down: >-
+      {{ 'fail' if (_state in ['responded', 'ok'])
+         else ('ok' if (_state in ['open|filtered', 'warn']) else 'warn') }}
+    _status: "{{ _status_down if _want_down else _status_up }}"
+    _detail_raw: >-
       {{ (_can_i_reach_r.result.detail | default('probe script error')) if _can_i_reach_windows
          else (_can_i_reach_r.detail | default(_can_i_reach_r.msg | default('no detail'))) }}
+    _detail: >-
+      {{ _detail_raw if not _want_down
+         else (('REACHABLE - expected blocked: ' ~ _detail_raw) if _status_down == 'fail'
+               else (('correctly blocked: ' ~ _detail_raw) if _status_down == 'ok'
+                     else ('host reached, port closed - not blocked by the network: ' ~ _detail_raw))) }}
   ansible.builtin.set_fact:
     can_i_reach_result: >-
       {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
@@ -175,7 +209,10 @@
   environment: "{{ _px_env }}"
   register: _can_i_reach_http_reg
   check_mode: false
-  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  # an entry expected to be blocked is allowed to fail its probe
+  ignore_errors: >-
+    {{ not can_i_reach_fail_fast
+       or (_can_i_reach_ep.expect | default('reachable')) == 'unreachable' }}
   loop: "{{ _can_i_reach_ep_http }}"
   loop_control:
     loop_var: _can_i_reach_ep
@@ -196,7 +233,10 @@
     return_content: false
   register: _can_i_reach_http_reg_win
   check_mode: false
-  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  # an entry expected to be blocked is allowed to fail its probe
+  ignore_errors: >-
+    {{ not can_i_reach_fail_fast
+       or (_can_i_reach_ep.expect | default('reachable')) == 'unreachable' }}
   loop: "{{ _can_i_reach_ep_http }}"
   loop_control:
     loop_var: _can_i_reach_ep
@@ -212,14 +252,28 @@
     _via: >-
       {{ (' via proxy ' ~ _px_label) if _px_mode == 'proxy'
          else (' (direct, proxy bypassed)' if _px_mode == 'direct' else '') }}
+    _want_down: "{{ (_ep.expect | default('reachable')) == 'unreachable' }}"
+    # any HTTP status means something answered - except a proxy's own
+    # 502/503/504, which is the proxy saying it could not get through
+    _reached: >-
+      {{ _got | int > 0
+         and not (_px_mode == 'proxy' and _got | int in [502, 503, 504]) }}
+    _status: >-
+      {{ ('ok' if _ok else 'fail') if not _want_down
+         else ('fail' if _reached else 'ok') }}
   ansible.builtin.set_fact:
     can_i_reach_result: >-
       {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
            'id': _ep.name | default(_scheme ~ ':' ~ _ep.host ~ ':' ~ _ep.port),
            'layer': 'endpoint',
-           'status': 'ok' if _ok else 'fail',
-           'detail': (('status ' ~ _got ~ ' from ' ~ _ep.path) if _ok
-                      else (_can_i_reach_r.msg | default('request failed') ~ ' (status ' ~ _got ~ ')'))
+           'status': _status,
+           'detail': ((('status ' ~ _got ~ ' from ' ~ _ep.path) if _ok
+                       else (_can_i_reach_r.msg | default('request failed') ~ ' (status ' ~ _got ~ ')'))
+                      if not _want_down
+                      else (('REACHABLE - expected blocked (status ' ~ _got ~ ' from ' ~ _ep.path ~ ')')
+                            if _reached
+                            else ('correctly blocked (no HTTP response: '
+                                  ~ (_can_i_reach_r.msg | default('request failed')) ~ ')')))
                      ~ _via,
            'remediation': ''}]}) }}
   loop: >-
@@ -243,7 +297,10 @@
   register: _can_i_reach_icmp_reg
   check_mode: false
   changed_when: false
-  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  # an entry expected to be blocked is allowed to fail its probe
+  ignore_errors: >-
+    {{ not can_i_reach_fail_fast
+       or (_can_i_reach_ep.expect | default('reachable')) == 'unreachable' }}
   loop: "{{ _can_i_reach_ep_icmp }}"
   loop_control:
     loop_var: _can_i_reach_ep
@@ -256,7 +313,10 @@
   register: _can_i_reach_icmp_reg_win
   check_mode: false
   changed_when: false
-  ignore_errors: "{{ not can_i_reach_fail_fast }}"
+  # an entry expected to be blocked is allowed to fail its probe
+  ignore_errors: >-
+    {{ not can_i_reach_fail_fast
+       or (_can_i_reach_ep.expect | default('reachable')) == 'unreachable' }}
   loop: "{{ _can_i_reach_ep_icmp }}"
   loop_control:
     loop_var: _can_i_reach_ep
@@ -265,15 +325,20 @@
 - name: Record ICMP endpoint results
   vars:
     _ep: "{{ _can_i_reach_r._can_i_reach_ep }}"
-    _ok: "{{ _can_i_reach_r.rc | default(1) == 0 }}"
+    _reached: "{{ _can_i_reach_r.rc | default(1) == 0 }}"
+    _want_down: "{{ (_ep.expect | default('reachable')) == 'unreachable' }}"
+    _ok: "{{ _reached != _want_down }}"
   ansible.builtin.set_fact:
     can_i_reach_result: >-
       {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
            'id': _ep.name | default('icmp:' ~ _ep.host),
            'layer': 'endpoint',
            'status': 'ok' if _ok else 'fail',
-           'detail': 'ICMP reply received' if _ok
-                     else 'no ICMP reply (host down, or ICMP filtered)',
+           'detail': ('ICMP reply received' if not _want_down
+                      else 'REACHABLE - expected blocked (ICMP reply received)')
+                     if _reached
+                     else ('no ICMP reply (host down, or ICMP filtered)' if not _want_down
+                           else 'correctly blocked (no ICMP reply)'),
            'remediation': ''}]}) }}
   loop: >-
     {{ ((_can_i_reach_icmp_reg_win if _can_i_reach_windows else _can_i_reach_icmp_reg).results
@@ -281,3 +346,19 @@
   loop_control:
     loop_var: _can_i_reach_r
     label: "{{ _can_i_reach_r._can_i_reach_ep.host }}"
+
+# Probes that were expected to be blocked cannot abort at probe time
+# (their module call "succeeding" is the failure), so fail-fast for
+# them is enforced here, after the whole endpoint layer is recorded.
+- name: Fail fast on an endpoint that answered although it was expected to be blocked
+  when:
+    - can_i_reach_fail_fast
+    - _can_i_reach_leaks | length > 0
+  vars:
+    _can_i_reach_leaks: >-
+      {{ can_i_reach_result.checks | selectattr('layer', 'eq', 'endpoint')
+         | selectattr('status', 'eq', 'fail')
+         | selectattr('detail', 'search', 'expected blocked') | list }}
+  ansible.builtin.fail:
+    msg: >-
+      {{ _can_i_reach_leaks | map(attribute='id') | join(', ') }}: reachable, but expected blocked

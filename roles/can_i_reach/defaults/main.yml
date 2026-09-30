@@ -36,6 +36,14 @@ can_i_reach_tries: 2              # datagram retransmits (UDP/DNS probes)
 # so a silent UDP probe records `warn` (open|filtered) unless
 # expect_reply=true makes silence a `fail`; ICMP port-unreachable is a
 # definitive `fail`.
+#
+# `expect: unreachable` inverts an entry — the check passes only when
+# the target does NOT answer, which is how a VLAN ACL or firewall rule
+# is proven from the inside. tcp: a connect must not succeed. icmp: no
+# echo reply. http(s): no HTTP response at all (through a proxy, a
+# 502/503/504 from the proxy counts as unreachable). udp: silence is
+# the pass; a reply is a fail; ICMP port-unreachable is `warn`, because
+# it proves the host itself was reached and only the port is closed.
 can_i_reach_endpoints: []
 #  - {host: 10.40.1.15, port: 8443}                        # tcp by default
 #  - {name: syslog, host: log.corp.example, port: 514, protocol: udp}
@@ -47,6 +55,8 @@ can_i_reach_endpoints: []
 #  - {host: api.vendor.example, port: 443, path: /, proxy: corp}   # via a
 #     named proxy (see can_i_reach_proxy / can_i_reach_proxies below)
 #  - {host: 10.40.3.5, port: 8443, path: /, proxy: false}          # never proxied
+#  - {name: no-rdp-to-dmz, host: 10.60.0.5, port: 3389, expect: unreachable}
+#  - {name: no-ping-mgmt, host: 10.99.0.1, protocol: icmp, expect: unreachable}
 
 # --- DNS --------------------------------------------------------------------
 # Each query runs against the system resolver (when

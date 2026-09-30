@@ -22,7 +22,7 @@ including a genuine NTP client exchange.
 
 | layer | what gets proven | Linux | Windows |
 |---|---|---|---|
-| endpoint | tcp / udp / icmp / http(s)+path, expected statuses | `wait_for`, `udp_probe`, `uri`, `ping` | `win_wait_for`, `UdpClient`, `win_uri`, `Test-Connection` |
+| endpoint | tcp / udp / icmp / http(s)+path, expected statuses; `expect: unreachable` proves a target is *blocked* | `wait_for`, `udp_probe`, `uri`, `ping` | `win_wait_for`, `UdpClient`, `win_uri`, `Test-Connection` |
 | dns | every query via the system resolver AND directly against each DNS server / DC / DR DC, optional expected answers, any qtype incl. SRV | `dns_query` (raw wire, TCP fallback) | `Resolve-DnsName [-Server -DnsOnly]` |
 | dc | AD port sweep per controller (53, 88, 135, 389, 445, 464, 636, 3268, 3269 by default), per-DC lookup of the domain apex, `_ldap._tcp.dc._msdcs` SRV | `wait_for` + `dns_query` | `win_wait_for` + `Resolve-DnsName` |
 | dc *(agentless)* | the same port sweep with **no interpreter, no collections, no packages** on the target — and it separates `timeout` (firewalled) from `refused` (closed) | `raw` + bash `/dev/tcp` under `timeout` | `raw` + `[Net.Sockets.TcpClient]` async connect |
@@ -138,6 +138,38 @@ plays can consume `can_i_reach_result` directly. Probes are read-only
 and still run under `--check` — the one deliberate side effect is the
 apt/dnf metadata refresh (`can_i_reach_repo_become` gates its
 escalation, `repo_mode: urls` avoids it entirely).
+
+## Proving something is blocked
+
+Half of a segmentation test is negative: the app VLAN must *not* reach
+management, the DMZ must *not* RDP inwards. `expect: unreachable`
+inverts an endpoint so the check passes only when nothing answers:
+
+```yaml
+can_i_reach_endpoints:
+  - {name: no-rdp-to-dmz, host: 10.60.0.5, port: 3389, expect: unreachable}
+  - {name: no-ping-mgmt, host: 10.99.0.1, protocol: icmp, expect: unreachable}
+  - {name: no-vcenter-ui, host: vcenter.corp.example, port: 443, path: /, expect: unreachable}
+  - {name: no-syslog-leak, host: 10.99.0.20, port: 514, protocol: udp, expect: unreachable}
+```
+
+```text
+[OK  ] endpoint no-rdp-to-dmz      correctly blocked (Timeout when waiting for 10.60.0.5:3389)
+[FAIL] endpoint no-vcenter-ui      REACHABLE - expected blocked (status 200 from /)
+[WARN] endpoint no-syslog-leak     host reached, port closed - not blocked by the network: ...
+```
+
+What counts as blocked, per protocol: tcp — the connect does not
+succeed (a firewall drop and a closed port both pass; use the agentless
+DC sweep when the distinction matters); icmp — no echo reply; http(s) —
+no HTTP response at all, and through a proxy the proxy's own
+502/503/504 counts as unreachable; udp — silence. A UDP ICMP
+port-unreachable is `warn`, not a pass: the datagram reached the host,
+so the network did not block it, only nothing was listening. With
+`can_i_reach_fail_fast` these entries abort the run after the endpoint
+layer is recorded (their probe "succeeding" is the failure).
+`can_i_reach_forbidden_urls` remains the shorthand for "direct internet
+must be blocked".
 
 ## Probing through a proxy
 
