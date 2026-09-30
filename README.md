@@ -258,6 +258,15 @@ records. Windows is tested by a real playbook
 a `windows-latest` runner over both WinRM and SSH — gated behind the
 `test-windows` PR label (or a manual dispatch) because it's slow.
 
+## Repository settings
+
+Branch protection for `main` is versioned in
+[`.github/rulesets/`](.github/rulesets) as GitHub ruleset JSON (no
+deletion, no force-push, `lint` and `linux` checks required). GitHub
+does not apply it from the file by itself — run
+`.github/rulesets/apply.sh` as a repo admin after cloning to a new org
+or editing the JSON; it creates or updates the ruleset by name.
+
 ## Releasing
 
 semantic-release on `main` with the angular preset (scoped conventional
