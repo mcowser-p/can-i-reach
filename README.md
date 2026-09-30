@@ -27,7 +27,7 @@ including a genuine NTP client exchange.
 | dc | AD port sweep per controller (53, 88, 135, 389, 445, 464, 636, 3268, 3269 by default), per-DC lookup of the domain apex, `_ldap._tcp.dc._msdcs` SRV | `wait_for` + `dns_query` | `win_wait_for` + `Resolve-DnsName` |
 | dc *(agentless)* | the same port sweep with **no interpreter, no collections, no packages** on the target — and it separates `timeout` (firewalled) from `refused` (closed) | `raw` + bash `/dev/tcp` under `timeout` | `raw` + `[Net.Sockets.TcpClient]` async connect |
 | time | a real NTP exchange with each source (falls back to the DC list) — Kerberos dies beyond 5 minutes of skew | `udp_probe payload=ntp` (reply validated) | `w32tm /stripchart` (+ source discovery) |
-| proxy | each proxy fetches its test URLs; `forbidden_urls` must NOT be reachable directly | `uri` + proxy env | `win_uri proxy_url` |
+| proxy | each proxy fetches its test URLs; `forbidden_urls` must NOT be reachable directly; any http(s) probe can be routed *through* a proxy (`can_i_reach_proxy`, per-entry `proxy:`) | `uri` + proxy env | `win_uri proxy_url` |
 | pkg | Linux: real apt/dnf metadata refresh (or explicit URL probes). Windows: WSUS from var → registry policy → public WU endpoints; winget sources; SMB shares (445 + access) | `apt`/`dnf`/`dnf5`, `uri` | `win_reg_stat`, `win_uri`, probe scripts |
 
 Every check lands in `can_i_reach_result.checks` as
@@ -138,6 +138,41 @@ plays can consume `can_i_reach_result` directly. Probes are read-only
 and still run under `--check` — the one deliberate side effect is the
 apt/dnf metadata refresh (`can_i_reach_repo_become` gates its
 escalation, `repo_mode: urls` avoids it entirely).
+
+## Probing through a proxy
+
+In a proxy-only estate the interesting question is not just "does the
+proxy work" but "does *this* endpoint work through it". Any http(s)
+probe — endpoints with a `path`, `can_i_reach_repo_urls`, and on Windows
+the WSUS / Windows Update / winget probes — can be routed through a
+proxy:
+
+```yaml
+can_i_reach_proxies:
+  - {name: corp, url: "http://proxy.corp.example:3128",
+     username: svc-proxy, password: "{{ vault_proxy_pw }}",
+     test_urls: [https://deb.debian.org]}      # test_urls optional: a
+                                               # definition-only entry
+can_i_reach_proxy: corp                        # default for every http(s) probe
+can_i_reach_no_proxy: [10.40.3.5, wsus.corp.example]   # these go direct
+
+can_i_reach_endpoints:
+  - {name: vendor-api, host: api.vendor.example, port: 443, path: /v1/ping}   # via corp
+  - {name: internal-ui, host: 10.40.3.5, port: 8443, path: /}               # no_proxy → direct
+  - {name: dmz-app, host: app.dmz.example, port: 443, path: /, proxy: "http://10.60.0.8:8080"}
+  - {name: mgmt, host: mgmt.corp.example, port: 443, path: /, proxy: false} # never proxied
+```
+
+Resolution per probe: the entry's `proxy` (a `can_i_reach_proxies`
+name, a URL, or `false`), else `can_i_reach_proxy`, else the host's own
+proxy environment is left alone. `false` (or a host in
+`can_i_reach_no_proxy`) forces a direct request even if the host has
+`https_proxy` set. On Linux the proxy rides in the task environment;
+on Windows it is `win_uri`'s native `proxy_url`. The report says which:
+`status 200 from /v1/ping via proxy corp`, or `(direct, proxy bypassed)`.
+
+tcp, udp and icmp probes never use a proxy — an HTTP proxy cannot carry
+them — so those always test the host's own routing.
 
 ## UDP, honestly
 

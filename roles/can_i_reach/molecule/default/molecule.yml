@@ -43,6 +43,11 @@ provisioner:
         can_i_reach_report_path: /tmp/can-i-reach-report.yml
         can_i_reach_endpoints:
           - {name: http-ok, host: 127.0.0.1, port: 8080, path: /, status_codes: [200]}
+          # proxied.test resolves nowhere — only the fake proxy knows it,
+          # so a 200 proves the request went through the proxy (with auth)
+          - {name: http-via-proxy, host: proxied.test, port: 80, path: /, proxy: corp}
+          - {name: http-via-dead-proxy, host: 127.0.0.1, port: 8080, path: /, proxy: dead, timeout: 2}
+          - {name: http-direct-explicit, host: 127.0.0.1, port: 8080, path: /, proxy: false}
           - {name: tcp-ok, host: 127.0.0.1, port: 8080}
           - {name: tcp-closed, host: 127.0.0.1, port: 9, timeout: 2}
           - {name: udp-echo, host: 127.0.0.1, port: 19999, protocol: udp, expect_reply: true}
@@ -56,3 +61,7 @@ provisioner:
           - {name: fake-ntp, address: 127.0.0.1}
         can_i_reach_forbidden_urls:
           - https://10.255.255.1
+        can_i_reach_proxies:
+          - {name: corp, url: "http://127.0.0.1:3128", username: user, password: pass,
+             test_urls: ["http://proxied.test/"]}
+          - {name: dead, url: "http://127.0.0.1:9"}
