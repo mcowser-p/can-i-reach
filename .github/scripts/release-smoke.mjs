@@ -7,9 +7,18 @@
 // releasable so generateNotes actually renders with the configured
 // preset, and runs semantic-release in dry-run against the PR branch.
 //
+// It is hermetic: semantic-release insists on verifying push access
+// (`git push --dry-run`) even in dry-run mode, and a PR workflow token is
+// read-only, so the checkout is cloned into a temporary bare mirror and
+// that mirror is the "remote" — no network, no credentials.
+//
 //   SMOKE_BRANCH=<branch> node .github/scripts/release-smoke.mjs
 import semanticRelease from "semantic-release";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const require = createRequire(import.meta.url);
 const config = require(`${process.cwd()}/.releaserc.js`);
@@ -26,8 +35,11 @@ const plugins = config.plugins
   );
 
 const branch = process.env.SMOKE_BRANCH || "main";
+const mirror = join(mkdtempSync(join(tmpdir(), "release-smoke-")), "remote.git");
+execFileSync("git", ["clone", "--quiet", "--bare", process.cwd(), mirror], { stdio: "inherit" });
+
 const result = await semanticRelease(
-  { ...config, plugins, branches: [branch], dryRun: true, ci: false },
+  { ...config, plugins, branches: [branch], repositoryUrl: mirror, dryRun: true, ci: false },
   { env: { ...process.env, GITHUB_ACTIONS: "" } },
 );
 
