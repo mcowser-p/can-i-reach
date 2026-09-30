@@ -19,6 +19,7 @@ import { mkdtempSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const require = createRequire(import.meta.url);
 const config = require(`${process.cwd()}/.releaserc.js`);
@@ -39,7 +40,7 @@ const mirror = join(mkdtempSync(join(tmpdir(), "release-smoke-")), "remote.git")
 execFileSync("git", ["clone", "--quiet", "--bare", process.cwd(), mirror], { stdio: "inherit" });
 
 const result = await semanticRelease(
-  { ...config, plugins, branches: [branch], repositoryUrl: mirror, dryRun: true, ci: false },
+  { ...config, plugins, branches: [branch], repositoryUrl: pathToFileURL(mirror).href, dryRun: true, ci: false },
   { env: { ...process.env, GITHUB_ACTIONS: "" } },
 );
 
