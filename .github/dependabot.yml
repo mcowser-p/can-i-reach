@@ -27,3 +27,5 @@ updates:
       prefix: "chore(deps)"
     labels:
       - dependencies
+      # ansible-core/molecule bumps must also pass the Windows job (label-gated)
+      - test-windows
