@@ -13,8 +13,10 @@ authors:
 description: >-
   can-i-reach — network preflight checks run from the managed host
   itself, for Linux and Windows targets. Verifies everything a fresh
-  deployment depends on: arbitrary TCP/UDP/HTTP endpoints, DNS against
-  the domain controllers (and DR controllers) directly, AD SRV records,
+  deployment depends on: arbitrary TCP/UDP/HTTP(S) endpoints — through
+  a proxy when the estate is proxy-only, or asserted blocked with
+  expect: unreachable for segmentation rules — DNS against the domain
+  controllers (and DR controllers) directly, AD SRV records,
   domain-controller port sets, real NTP time sources, proxy egress (and
   optionally that direct internet is blocked), plus the package
   infrastructure — apt/dnf repos on Linux; WSUS/Windows Update, winget
