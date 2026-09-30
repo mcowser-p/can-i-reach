@@ -17,10 +17,26 @@
          | selectattr('protocol', 'defined')
          | selectattr('protocol', 'in', ['udp', 'icmp']) | list }}
     _proxy_no_url: "{{ can_i_reach_proxies | selectattr('url', 'undefined') | list }}"
-    _proxy_no_tests: >-
-      {{ can_i_reach_proxies | selectattr('test_urls', 'undefined') | list
-         + can_i_reach_proxies | selectattr('test_urls', 'defined')
-         | selectattr('test_urls', 'eq', []) | list }}
+    # `proxy` only means something on an http(s) entry (path set, tcp)
+    _proxy_clash: >-
+      {{ can_i_reach_endpoints | selectattr('proxy', 'defined')
+         | rejectattr('path', 'defined') | list
+         + can_i_reach_endpoints | selectattr('proxy', 'defined')
+         | selectattr('protocol', 'defined')
+         | selectattr('protocol', 'in', ['udp', 'icmp']) | list }}
+    # Every proxy reference must be a URL or the name of a proxies entry
+    _proxy_names: >-
+      {{ can_i_reach_proxies | selectattr('name', 'defined') | map(attribute='name') | list }}
+    _proxy_refs: >-
+      {{ (can_i_reach_endpoints | selectattr('proxy', 'defined') | map(attribute='proxy') | list
+          + can_i_reach_repo_urls | selectattr('proxy', 'defined') | map(attribute='proxy') | list
+          + can_i_reach_wu_public_endpoints | selectattr('proxy', 'defined') | map(attribute='proxy') | list
+          + can_i_reach_winget_sources | selectattr('proxy', 'defined') | map(attribute='proxy') | list
+          + [can_i_reach_proxy])
+         | map('string') | map('lower') | reject('in', ['', 'false', 'none', 'direct']) | list }}
+    _proxy_unknown: >-
+      {{ _proxy_refs | reject('search', '://')
+         | reject('in', _proxy_names | map('lower') | list) | list }}
     _dc_no_addr: "{{ can_i_reach_domain_controllers | selectattr('address', 'undefined') | list }}"
     _smb_no_unc: "{{ can_i_reach_smb_shares | selectattr('unc', 'undefined') | list }}"
     _dns_no_name: "{{ can_i_reach_dns_queries | selectattr('name', 'undefined') | list }}"
@@ -46,7 +62,8 @@
       - _no_port | length == 0
       - _path_clash | length == 0
       - _proxy_no_url | length == 0
-      - _proxy_no_tests | length == 0
+      - _proxy_clash | length == 0
+      - _proxy_unknown | length == 0
       - _dc_no_addr | length == 0
       - _smb_no_unc | length == 0
       - _dns_no_name | length == 0
@@ -63,7 +80,8 @@
       {{ 'non-icmp endpoints need a port: ' ~ (_no_port | string) ~ '. ' if _no_port | length > 0 else '' }}
       {{ 'path only applies to tcp/http endpoints: ' ~ (_path_clash | string) ~ '. ' if _path_clash | length > 0 else '' }}
       {{ 'proxies need url: ' ~ (_proxy_no_url | string) ~ '. ' if _proxy_no_url | length > 0 else '' }}
-      {{ 'proxies need non-empty test_urls: ' ~ (_proxy_no_tests | string) ~ '. ' if _proxy_no_tests | length > 0 else '' }}
+      {{ 'proxy only applies to http(s) endpoints (path set): ' ~ (_proxy_clash | string) ~ '. ' if _proxy_clash | length > 0 else '' }}
+      {{ 'proxy reference(s) are neither a URL nor a can_i_reach_proxies name: ' ~ (_proxy_unknown | join(', ')) ~ '. ' if _proxy_unknown | length > 0 else '' }}
       {{ 'domain_controllers need address: ' ~ (_dc_no_addr | string) ~ '. ' if _dc_no_addr | length > 0 else '' }}
       {{ 'smb_shares need unc: ' ~ (_smb_no_unc | string) ~ '. ' if _smb_no_unc | length > 0 else '' }}
       {{ 'dns_queries need name: ' ~ (_dns_no_name | string) ~ '. ' if _dns_no_name | length > 0 else '' }}

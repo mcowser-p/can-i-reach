@@ -10,10 +10,12 @@
   ansible.builtin.set_fact:
     _can_i_reach_px_pairs: []
 
+# Entries without test_urls are definitions only (referenced by `proxy:`
+# on http(s) probes) and get no check of their own.
 - name: Expand proxies against their test urls
   ansible.builtin.set_fact:
     _can_i_reach_px_pairs: >-
-      {{ _can_i_reach_px_pairs + ([_can_i_reach_px] | product(_can_i_reach_px.test_urls) | list) }}
+      {{ _can_i_reach_px_pairs + ([_can_i_reach_px] | product(_can_i_reach_px.test_urls | default([])) | list) }}
   loop: "{{ can_i_reach_proxies }}"
   loop_control:
     loop_var: _can_i_reach_px

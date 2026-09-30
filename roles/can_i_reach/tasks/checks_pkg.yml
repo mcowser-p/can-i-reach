@@ -84,22 +84,50 @@
     - not _can_i_reach_windows
     - can_i_reach_repo_enabled
     - can_i_reach_repo_mode == 'urls'
+  vars: &can_i_reach_pkg_px
+    # same proxy resolution as the http(s) endpoints (see checks_endpoints.yml)
+    _px_ref: "{{ _px_item.proxy | default(can_i_reach_proxy) | string }}"
+    _px_host: "{{ _px_item.url | urlsplit('hostname') }}"
+    _px_mode: >-
+      {{ 'direct' if (_px_ref | lower in ['false', 'none', 'direct']
+                      or _px_host in can_i_reach_no_proxy)
+         else ('system' if _px_ref | length == 0 else 'proxy') }}
+    _px_named: >-
+      {{ can_i_reach_proxies | selectattr('name', 'defined')
+         | selectattr('name', 'eq', _px_ref) | list }}
+    _px: "{{ _px_named[0] if _px_named | length > 0 else {'url': _px_ref} }}"
+    _px_label: "{{ _px.name | default(_px.url | urlsplit('hostname')) }}"
+    _px_creds: >-
+      {{ (_px.username ~ ':' ~ _px.password ~ '@') if _px.username is defined else '' }}
+    _px_env_url: "{{ _px.url | regex_replace('^(https?://)', '\\1' ~ _px_creds) }}"
+    _px_env: >-
+      {{ {'http_proxy': _px_env_url, 'https_proxy': _px_env_url,
+          'HTTP_PROXY': _px_env_url, 'HTTPS_PROXY': _px_env_url,
+          'no_proxy': '', 'NO_PROXY': ''}
+         if _px_mode == 'proxy' else {} }}
+    _via: >-
+      {{ (' via proxy ' ~ _px_label) if _px_mode == 'proxy'
+         else (' (direct, proxy bypassed)' if _px_mode == 'direct' else '') }}
   ansible.builtin.uri:
-    url: "{{ _can_i_reach_ru.url }}"
-    status_code: "{{ _can_i_reach_ru.status_codes | default([200]) }}"
-    timeout: "{{ _can_i_reach_ru.timeout | default(can_i_reach_timeout) }}"
+    url: "{{ _px_item.url }}"
+    status_code: "{{ _px_item.status_codes | default([200]) }}"
+    timeout: "{{ _px_item.timeout | default(can_i_reach_timeout) }}"
+    use_proxy: "{{ _px_mode != 'direct' }}"
     return_content: false
+  environment: "{{ _px_env }}"
   register: _can_i_reach_repourl_reg
   check_mode: false
   ignore_errors: "{{ not can_i_reach_fail_fast }}"
   loop: "{{ can_i_reach_repo_urls }}"
   loop_control:
-    loop_var: _can_i_reach_ru
-    label: "{{ _can_i_reach_ru.name | default(_can_i_reach_ru.url) }}"
+    loop_var: _px_item
+    label: "{{ _px_item.name | default(_px_item.url) }}"
 
 - name: Record the repository url probes
   vars:
-    _ru: "{{ _can_i_reach_r._can_i_reach_ru }}"
+    <<: *can_i_reach_pkg_px
+    _px_item: "{{ _can_i_reach_r._px_item }}"
+    _ru: "{{ _can_i_reach_r._px_item }}"
     _ok: "{{ not (_can_i_reach_r.failed | default(false)) }}"
     _got: "{{ _can_i_reach_r.status | default(-1) }}"
   ansible.builtin.set_fact:
@@ -108,13 +136,14 @@
            'id': 'repo:' ~ (_ru.name | default(_ru.url | urlsplit('hostname'))),
            'layer': 'pkg',
            'status': 'ok' if _ok else 'fail',
-           'detail': ('status ' ~ _got) if _ok
-                     else ((_can_i_reach_r.msg | default('request failed')) ~ ' (status ' ~ _got ~ ')'),
+           'detail': (('status ' ~ _got) if _ok
+                      else ((_can_i_reach_r.msg | default('request failed')) ~ ' (status ' ~ _got ~ ')'))
+                     ~ _via,
            'remediation': ''}]}) }}
   loop: "{{ (_can_i_reach_repourl_reg.results | default([])) | rejectattr('skipped', 'defined') | list }}"
   loop_control:
     loop_var: _can_i_reach_r
-    label: "{{ _can_i_reach_r._can_i_reach_ru.url }}"
+    label: "{{ _can_i_reach_r._px_item.url }}"
 
 # --- windows: WSUS / Windows Update ----------------------------------------------
 - name: Read the WSUS server policy
@@ -144,10 +173,17 @@
     - _can_i_reach_windows
     - can_i_reach_wu_enabled
     - _can_i_reach_wsus | default('') | length > 0
+  vars:
+    <<: *can_i_reach_pkg_px
+    _px_item: {url: "{{ _can_i_reach_wsus }}"}
   ansible.windows.win_uri:
     url: "{{ _can_i_reach_wsus }}/ClientWebService/client.asmx"
     status_code: "{{ can_i_reach_wsus_status_codes }}"
     timeout: "{{ can_i_reach_timeout }}"
+    use_proxy: "{{ _px_mode != 'direct' }}"
+    proxy_url: "{{ _px.url if _px_mode == 'proxy' else omit }}"
+    proxy_username: "{{ _px.username if (_px_mode == 'proxy' and _px.username is defined) else omit }}"
+    proxy_password: "{{ _px.password if (_px_mode == 'proxy' and _px.password is defined) else omit }}"
     return_content: false
   register: _can_i_reach_wsus_reg
   check_mode: false
@@ -177,22 +213,30 @@
     - _can_i_reach_windows
     - can_i_reach_wu_enabled
     - _can_i_reach_wsus | default('') | length == 0
+  vars:
+    <<: *can_i_reach_pkg_px
   ansible.windows.win_uri:
-    url: "{{ _can_i_reach_wu.url }}"
-    status_code: "{{ _can_i_reach_wu.status_codes | default([200]) }}"
+    url: "{{ _px_item.url }}"
+    status_code: "{{ _px_item.status_codes | default([200]) }}"
     timeout: "{{ can_i_reach_timeout }}"
+    use_proxy: "{{ _px_mode != 'direct' }}"
+    proxy_url: "{{ _px.url if _px_mode == 'proxy' else omit }}"
+    proxy_username: "{{ _px.username if (_px_mode == 'proxy' and _px.username is defined) else omit }}"
+    proxy_password: "{{ _px.password if (_px_mode == 'proxy' and _px.password is defined) else omit }}"
     return_content: false
   register: _can_i_reach_wupub_reg
   check_mode: false
   ignore_errors: "{{ not can_i_reach_fail_fast }}"
   loop: "{{ can_i_reach_wu_public_endpoints }}"
   loop_control:
-    loop_var: _can_i_reach_wu
-    label: "{{ _can_i_reach_wu.name }}"
+    loop_var: _px_item
+    label: "{{ _px_item.name }}"
 
 - name: Record the public Windows Update probes
   vars:
-    _wu: "{{ _can_i_reach_r._can_i_reach_wu }}"
+    <<: *can_i_reach_pkg_px
+    _px_item: "{{ _can_i_reach_r._px_item }}"
+    _wu: "{{ _can_i_reach_r._px_item }}"
     _ok: "{{ not (_can_i_reach_r.failed | default(false)) }}"
     _got: "{{ _can_i_reach_r.status_code | default(-1) }}"
   ansible.builtin.set_fact:
@@ -201,13 +245,13 @@
            'id': 'wu:' ~ _wu.name,
            'layer': 'pkg',
            'status': 'ok' if _ok else 'fail',
-           'detail': ('reachable (status ' ~ _got ~ ')') if _ok
-                     else ((_can_i_reach_r.msg | default('unreachable')) | truncate(160)),
+           'detail': (('reachable (status ' ~ _got ~ ')') if _ok
+                      else ((_can_i_reach_r.msg | default('unreachable')) | truncate(160))) ~ _via,
            'remediation': ''}]}) }}
   loop: "{{ (_can_i_reach_wupub_reg.results | default([])) | rejectattr('skipped', 'defined') | list }}"
   loop_control:
     loop_var: _can_i_reach_r
-    label: "{{ _can_i_reach_r._can_i_reach_wu.name }}"
+    label: "{{ _can_i_reach_r._px_item.name }}"
 
 - name: Run a real Windows Update Agent search (deep check)
   when:
@@ -251,22 +295,30 @@
 # --- windows: winget ---------------------------------------------------------------
 - name: Probe the winget source endpoints
   when: _can_i_reach_windows and can_i_reach_winget_enabled
+  vars:
+    <<: *can_i_reach_pkg_px
   ansible.windows.win_uri:
-    url: "{{ _can_i_reach_wg.url }}"
-    status_code: "{{ _can_i_reach_wg.status_codes | default([200]) }}"
+    url: "{{ _px_item.url }}"
+    status_code: "{{ _px_item.status_codes | default([200]) }}"
     timeout: "{{ can_i_reach_timeout }}"
+    use_proxy: "{{ _px_mode != 'direct' }}"
+    proxy_url: "{{ _px.url if _px_mode == 'proxy' else omit }}"
+    proxy_username: "{{ _px.username if (_px_mode == 'proxy' and _px.username is defined) else omit }}"
+    proxy_password: "{{ _px.password if (_px_mode == 'proxy' and _px.password is defined) else omit }}"
     return_content: false
   register: _can_i_reach_winget_reg
   check_mode: false
   ignore_errors: "{{ not can_i_reach_fail_fast }}"
   loop: "{{ can_i_reach_winget_sources }}"
   loop_control:
-    loop_var: _can_i_reach_wg
-    label: "{{ _can_i_reach_wg.name }}"
+    loop_var: _px_item
+    label: "{{ _px_item.name }}"
 
 - name: Record the winget source probes
   vars:
-    _wg: "{{ _can_i_reach_r._can_i_reach_wg }}"
+    <<: *can_i_reach_pkg_px
+    _px_item: "{{ _can_i_reach_r._px_item }}"
+    _wg: "{{ _can_i_reach_r._px_item }}"
     _ok: "{{ not (_can_i_reach_r.failed | default(false)) }}"
     _got: "{{ _can_i_reach_r.status_code | default(-1) }}"
   ansible.builtin.set_fact:
@@ -275,13 +327,13 @@
            'id': 'winget:' ~ _wg.name,
            'layer': 'pkg',
            'status': 'ok' if _ok else 'fail',
-           'detail': ('reachable (status ' ~ _got ~ ')') if _ok
-                     else ((_can_i_reach_r.msg | default('unreachable')) | truncate(160)),
+           'detail': (('reachable (status ' ~ _got ~ ')') if _ok
+                      else ((_can_i_reach_r.msg | default('unreachable')) | truncate(160))) ~ _via,
            'remediation': ''}]}) }}
   loop: "{{ (_can_i_reach_winget_reg.results | default([])) | rejectattr('skipped', 'defined') | list }}"
   loop_control:
     loop_var: _can_i_reach_r
-    label: "{{ _can_i_reach_r._can_i_reach_wg.name }}"
+    label: "{{ _can_i_reach_r._px_item.name }}"
 
 - name: Probe the sources winget actually has configured
   when: _can_i_reach_windows and can_i_reach_winget_enabled and can_i_reach_winget_dynamic

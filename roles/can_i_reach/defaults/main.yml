@@ -44,6 +44,9 @@ can_i_reach_endpoints: []
 #  - {name: gw-ping, host: 10.40.0.1, protocol: icmp}
 #  - {host: repo.corp.example, port: 8081, path: /repository/pypi/,
 #     scheme: http, timeout: 10}
+#  - {host: api.vendor.example, port: 443, path: /, proxy: corp}   # via a
+#     named proxy (see can_i_reach_proxy / can_i_reach_proxies below)
+#  - {host: 10.40.3.5, port: 8443, path: /, proxy: false}          # never proxied
 
 # --- DNS --------------------------------------------------------------------
 # Each query runs against the system resolver (when
@@ -113,8 +116,22 @@ can_i_reach_proxies: []
 #     test_urls: [https://deb.debian.org, https://pypi.org]}
 #  - {name: dmz, url: "http://10.60.0.8:8080", username: svc-proxy,
 #     password: "{{ vault_proxy_pw }}", test_urls: [https://example.com]}
+#  - {name: legacy, url: "http://10.60.0.9:8080"}   # definition only:
+#                                    # referenced by endpoints' `proxy: legacy`
 can_i_reach_forbidden_urls: []
 #  - https://example.com           # must fail without the proxy
+
+# Routing HTTP(S) probes THROUGH a proxy. can_i_reach_proxy is the
+# default for every http(s) endpoint and repo/Windows Update url probe:
+# a proxy URL, or the `name` of an entry in can_i_reach_proxies (its
+# credentials come along; such an entry needs no test_urls). Per entry:
+# `proxy: <name|url>` overrides, `proxy: false` forces a direct request
+# (ignoring any proxy env on the host), and hosts listed in
+# can_i_reach_no_proxy always go direct. Empty = leave the host's own
+# proxy environment alone. tcp/udp/icmp probes never use a proxy — an
+# HTTP proxy cannot carry them.
+can_i_reach_proxy: ""
+can_i_reach_no_proxy: []
 
 # --- Package infrastructure: Linux -----------------------------------------
 # refresh mode actually refreshes the apt/dnf metadata cache — the only

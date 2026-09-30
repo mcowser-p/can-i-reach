@@ -134,19 +134,45 @@
     label: "{{ _can_i_reach_r._can_i_reach_ep.host }}:{{ _can_i_reach_r._can_i_reach_ep.port }}"
 
 # --- http(s) -----------------------------------------------------------------
+# Proxy resolution per entry: `proxy` on the entry, else can_i_reach_proxy,
+# else the host's own environment (mode=system, nothing touched).
+# `false|none|direct` or a host in can_i_reach_no_proxy forces a direct
+# request; a value naming a can_i_reach_proxies entry pulls its url and
+# credentials; anything else is a proxy URL. The anchor is reused by the
+# record task so the report can say which proxy carried the request.
 - name: Probe HTTP endpoints
   when: not _can_i_reach_windows
-  vars:
+  vars: &can_i_reach_http_vars
     _scheme: >-
       {{ _can_i_reach_ep.scheme
          | default('https' if _can_i_reach_ep.port | int in [443, 8443] else 'http') }}
+    _px_ref: "{{ _can_i_reach_ep.proxy | default(can_i_reach_proxy) | string }}"
+    _px_mode: >-
+      {{ 'direct' if (_px_ref | lower in ['false', 'none', 'direct']
+                      or _can_i_reach_ep.host in can_i_reach_no_proxy)
+         else ('system' if _px_ref | length == 0 else 'proxy') }}
+    _px_named: >-
+      {{ can_i_reach_proxies | selectattr('name', 'defined')
+         | selectattr('name', 'eq', _px_ref) | list }}
+    _px: "{{ _px_named[0] if _px_named | length > 0 else {'url': _px_ref} }}"
+    _px_label: "{{ _px.name | default(_px.url | urlsplit('hostname')) }}"
+    _px_creds: >-
+      {{ (_px.username ~ ':' ~ _px.password ~ '@') if _px.username is defined else '' }}
+    _px_env_url: "{{ _px.url | regex_replace('^(https?://)', '\\1' ~ _px_creds) }}"
+    _px_env: >-
+      {{ {'http_proxy': _px_env_url, 'https_proxy': _px_env_url,
+          'HTTP_PROXY': _px_env_url, 'HTTPS_PROXY': _px_env_url,
+          'no_proxy': '', 'NO_PROXY': ''}
+         if _px_mode == 'proxy' else {} }}
   ansible.builtin.uri:
     url: "{{ _scheme }}://{{ _can_i_reach_ep.host }}:{{ _can_i_reach_ep.port }}{{ _can_i_reach_ep.path }}"
     status_code: "{{ _can_i_reach_ep.status_codes | default([200]) }}"
     validate_certs: "{{ _can_i_reach_ep.validate_certs | default(true) }}"
     timeout: "{{ _can_i_reach_ep.timeout | default(can_i_reach_timeout) }}"
+    use_proxy: "{{ _px_mode != 'direct' }}"
     follow_redirects: safe
     return_content: false
+  environment: "{{ _px_env }}"
   register: _can_i_reach_http_reg
   check_mode: false
   ignore_errors: "{{ not can_i_reach_fail_fast }}"
@@ -157,15 +183,16 @@
 
 - name: Probe HTTP endpoints (windows)
   when: _can_i_reach_windows
-  vars:
-    _scheme: >-
-      {{ _can_i_reach_ep.scheme
-         | default('https' if _can_i_reach_ep.port | int in [443, 8443] else 'http') }}
+  vars: *can_i_reach_http_vars
   ansible.windows.win_uri:
     url: "{{ _scheme }}://{{ _can_i_reach_ep.host }}:{{ _can_i_reach_ep.port }}{{ _can_i_reach_ep.path }}"
     status_code: "{{ _can_i_reach_ep.status_codes | default([200]) }}"
     validate_certs: "{{ _can_i_reach_ep.validate_certs | default(true) }}"
     timeout: "{{ _can_i_reach_ep.timeout | default(can_i_reach_timeout) }}"
+    use_proxy: "{{ _px_mode != 'direct' }}"
+    proxy_url: "{{ _px.url if _px_mode == 'proxy' else omit }}"
+    proxy_username: "{{ _px.username if (_px_mode == 'proxy' and _px.username is defined) else omit }}"
+    proxy_password: "{{ _px.password if (_px_mode == 'proxy' and _px.password is defined) else omit }}"
     return_content: false
   register: _can_i_reach_http_reg_win
   check_mode: false
@@ -177,19 +204,23 @@
 
 - name: Record HTTP endpoint results
   vars:
+    <<: *can_i_reach_http_vars
+    _can_i_reach_ep: "{{ _can_i_reach_r._can_i_reach_ep }}"
     _ep: "{{ _can_i_reach_r._can_i_reach_ep }}"
     _ok: "{{ not (_can_i_reach_r.failed | default(false)) }}"
     _got: "{{ _can_i_reach_r.status | default(_can_i_reach_r.status_code | default(-1)) }}"
-    _scheme: >-
-      {{ _ep.scheme | default('https' if _ep.port | int in [443, 8443] else 'http') }}
+    _via: >-
+      {{ (' via proxy ' ~ _px_label) if _px_mode == 'proxy'
+         else (' (direct, proxy bypassed)' if _px_mode == 'direct' else '') }}
   ansible.builtin.set_fact:
     can_i_reach_result: >-
       {{ can_i_reach_result | combine({'checks': can_i_reach_result.checks + [{
            'id': _ep.name | default(_scheme ~ ':' ~ _ep.host ~ ':' ~ _ep.port),
            'layer': 'endpoint',
            'status': 'ok' if _ok else 'fail',
-           'detail': ('status ' ~ _got ~ ' from ' ~ _ep.path) if _ok
-                     else (_can_i_reach_r.msg | default('request failed') ~ ' (status ' ~ _got ~ ')'),
+           'detail': (('status ' ~ _got ~ ' from ' ~ _ep.path) if _ok
+                      else (_can_i_reach_r.msg | default('request failed') ~ ' (status ' ~ _got ~ ')'))
+                     ~ _via,
            'remediation': ''}]}) }}
   loop: >-
     {{ ((_can_i_reach_http_reg_win if _can_i_reach_windows else _can_i_reach_http_reg).results
