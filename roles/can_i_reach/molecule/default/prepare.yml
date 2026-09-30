@@ -36,12 +36,12 @@
     - name: Read the container's original nameservers
       ansible.builtin.slurp:
         src: /etc/resolv.conf
-      register: _resolv
+      register: _can_i_reach_resolv
 
     - name: Start dnsmasq on loopback with the AD-style records
       vars:
         _upstreams: >-
-          {{ _resolv.content | b64decode | regex_findall('(?m)^nameserver\s+(\S+)')
+          {{ _can_i_reach_resolv.content | b64decode | regex_findall('(?m)^nameserver\s+(\S+)')
              | reject('match', '^127\.0\.0\.[12]$') | list }}
       ansible.builtin.shell:
         cmd: >-
