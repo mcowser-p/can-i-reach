@@ -18,6 +18,13 @@ updates:
       prefix: "chore(deps)"
     labels:
       - dependencies
+    ignore:
+      # v10 needs conventional-changelog-writer@9, but
+      # @semantic-release/release-notes-generator ships writer@8 and
+      # generateNotes dies with "Missing helper" (release-smoke catches
+      # it). Drop this once the plugin moves to writer@9.
+      - dependency-name: conventional-changelog-conventionalcommits
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: pip
     directory: /
