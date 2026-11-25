@@ -3,7 +3,7 @@
   "private": true,
   "description": "Release toolchain for the mcowser_p.can_i_reach collection (semantic-release)",
   "devDependencies": {
-    "semantic-release": "25.0.9",
+    "semantic-release": "26.0.1",
     "@semantic-release/commit-analyzer": "13.0.1",
     "@semantic-release/exec": "7.1.0",
     "@semantic-release/github": "12.0.9",
